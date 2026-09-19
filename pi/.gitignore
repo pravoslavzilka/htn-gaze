@@ -1,0 +1,16 @@
+# build output and local copies
+camera_streamer
+camera_streamer.new
+probe
+*.bin
+*.core
+core
+# backups and transfer bundles
+*.orig
+*.pre_*
+*.tgz
+._*
+# runtime logs
+*.log
+# real Wi-Fi credentials must never be committed (use sdcard/wpa_supplicant.conf.example)
+sdcard/wpa_supplicant.conf

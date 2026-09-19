@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gaze calibration</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #msg { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+         gap: 16px; font: 20px/1.4 system-ui, sans-serif; color: #ddd; text-align: center; padding: 24px; cursor: default; }
+  #msg button { font: inherit; padding: 12px 28px; border-radius: 8px; border: 1px solid #666; background: #222; color: #fff; cursor: pointer; }
+  #msg small { color: #888; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="msg">
+  <div>Gaze calibration</div>
+  <small>Put the browser in full screen (F11), point the scene camera at this screen, then click Start.<br>
+  Look at the centre of each coloured square until it disappears.<br>
+  <b>Keep your head still and move only your eyes.</b> The whole screen must be inside the scene camera's view.</small>
+  <button id="go">Start</button>
+</div>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const msg = document.getElementById('msg');
+function resize() { cv.width = innerWidth * devicePixelRatio; cv.height = innerHeight * devicePixelRatio; }
+addEventListener('resize', resize); resize();
+
+document.getElementById('go').onclick = async () => {
+  msg.style.display = 'none';
+  try { await document.documentElement.requestFullscreen(); } catch (e) {}
+  await fetch('/start', { method: 'POST' });
+};
+
+function draw(s) {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (s.phase === 'show') {
+    const size = Math.round(Math.min(cv.width, cv.height) * s.size);
+    const cx = s.x * cv.width, cy = s.y * cv.height;
+    ctx.fillStyle = s.color; ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+    ctx.fillStyle = '#000';                       // small fixation cross in the centre
+    const t = Math.max(2, size / 14), L = size / 5;
+    ctx.fillRect(cx - L, cy - t / 2, 2 * L, t); ctx.fillRect(cx - t / 2, cy - L, t, 2 * L);
+  } else if (s.phase === 'done') {
+    msg.style.display = 'flex'; msg.style.cursor = 'default';
+    msg.innerHTML = '<div style="font-size:20vmin;font-weight:700;letter-spacing:.05em;color:#fff">END</div>';
+  } else if (s.phase === 'full') {                // full white screen, used to find the screen in the scene camera
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  }
+}
+
+async function poll() {
+  try { draw(await (await fetch('/state', { cache: 'no-store' })).json()); } catch (e) {}
+  setTimeout(poll, 40);
+}
+poll();
+</script>
+</body>
+</html>

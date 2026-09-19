@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Both cameras</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; --bg:#111; --fg:#ddd; --mut:#888; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; }
+  header { padding:10px 16px; color:var(--mut); }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:12px; padding:0 16px 16px; }
+  figure { margin:0; }
+  figcaption { padding:6px 0; }
+  img { width:100%; display:block; background:#000; border-radius:6px; }
+</style>
+</head>
+<body>
+<header>Eye camera (left) and scene camera (right) - board <span id="h"></span></header>
+<main>
+  <figure><figcaption>Eye camera - unit 4, port 8080</figcaption><img id="eye" alt="eye camera stream"></figure>
+  <figure><figcaption>Scene camera - unit 3, port 8081</figcaption><img id="scene" alt="scene camera stream"></figure>
+</main>
+<script>
+  const host = new URLSearchParams(location.search).get('host') || '169.254.96.94';
+  document.getElementById('h').textContent = host;
+  document.getElementById('eye').src = `http://${host}:8080/stream.mjpg`;
+  document.getElementById('scene').src = `http://${host}:8081/stream.mjpg`;
+</script>
+</body>
+</html>

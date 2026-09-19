@@ -1,0 +1,16 @@
+# local Python environment
+oak-venv/
+.venv/
+__pycache__/
+*.pyc
+
+# calibration data: contains pictures of the user's face and eyes, and per-person eye measurements
+calib/run_*/
+calib/features_check*
+calib/.showcase_marker
+experiments/focus_out/
+
+# logs and local backups
+*.log
+calib/*.bak*
+calib/gaze_live_v1_old.py

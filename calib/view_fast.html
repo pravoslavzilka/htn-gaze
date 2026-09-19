@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cameras (low delay)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; --bg:#111; --fg:#ddd; --mut:#888; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; }
+  header { padding:10px 16px; color:var(--mut); }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:12px; padding:0 16px 16px; }
+  figure { margin:0; }
+  figcaption { padding:6px 0; }
+  img { width:100%; display:block; background:#000; border-radius:6px; }
+</style>
+</head>
+<body>
+<header>Low-delay view over the wired LAN - board <span id="h"></span>. Each panel always asks for the newest frame, so nothing queues up.</header>
+<main>
+  <figure><figcaption>Eye camera (unit 4) <span id="eye_s" style="color:var(--mut)"></span></figcaption><img id="eye" alt="eye camera"></figure>
+  <figure><figcaption>Scene camera (unit 3) <span id="scene_s" style="color:var(--mut)"></span></figcaption><img id="scene" alt="scene camera"></figure>
+</main>
+<script>
+  const host = new URLSearchParams(location.search).get('host') || '169.254.96.94';   // wired LAN address
+  document.getElementById('h').textContent = host;
+  function loop(id, port) {
+    const img = document.getElementById(id), stat = document.getElementById(id + '_s');
+    let n = 0, t0 = performance.now();
+    function next() {
+      const t = performance.now();
+      img.onload = () => {
+        n++;
+        if (performance.now() - t0 > 1000) {
+          stat.textContent = `${n} fps, ${Math.round(performance.now() - t)} ms per frame`;
+          n = 0; t0 = performance.now();
+        }
+        next();
+      };
+      img.onerror = () => setTimeout(next, 300);
+      img.src = `http://${host}:${port}/api/frame.jpg?t=${Date.now()}`;
+    }
+    next();
+  }
+  loop('eye', 8080);
+  loop('scene', 8081);
+</script>
+</body>
+</html>
