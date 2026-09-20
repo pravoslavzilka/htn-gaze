@@ -19,6 +19,7 @@ scene camera -> Pi (QNX): video only -------------------------------------------
 |---|---|
 | [`pi/`](pi/README.md) | Everything that runs on the board: C/C++ camera streamer, models, build and start scripts, SD-card config |
 | [`calib/`](calib/README.md) | Laptop tools: calibration session, pupil features, robust fit, live gaze view, camera viewers |
+| [`outer-vision/`](outer-vision/README.md) | The instrument: what you look at on the laptop screen (coloured blocks) or with balloons plays a tone. Control page, per-user calibration, manual offset, white balance |
 | [`experiments/`](experiments) | Side experiments that are not part of the main pipeline (a Luxonis OAK-1 UVC attempt, a focus-sharpness test) |
 
 ## Quick start
@@ -26,6 +27,7 @@ scene camera -> Pi (QNX): video only -------------------------------------------
 1. Copy `pi/` to `~/gazecomp` on the board, build with `scripts/build.sh`, start with `scripts/start_streamers.sh` (see `pi/README.md`).
 2. On the laptop: `pip install -r calib/requirements.txt`, open `calib/view_fast.html` to check both cameras, then `python calib/calibrate.py`.
 3. Live pointing: `python calib/gaze_live.py`.
+4. Tones from where you look (blocks or balloons): `cd outer-vision`, `pip install -r requirements.txt`, then `python tools/launcher.py --host <board ip>` and open http://127.0.0.1:8780/ (see `outer-vision/README.md`).
 
 ## Status
 

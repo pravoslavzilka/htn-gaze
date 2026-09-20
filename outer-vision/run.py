@@ -157,6 +157,7 @@ def main():
     fps_ema, last_wall = 0.0, time.monotonic()
     frame = t = idx = None
     locks = 0
+    cap_ms = gaze_ms = scene_ms = fix_ms = 0.0   # per-stage timings, reported in --status-file
     usercal = UserCal(args.user_cal)
     moff = ManualOffset(args.manual_offset)
     wb = AutoWB() if cfg.get("white_balance", {}).get("enabled") else None
@@ -167,31 +168,41 @@ def main():
 
     while True:
         if not paused or frame is None:
+            t_cap0 = time.perf_counter()
             raw, t, idx = src.read()
             if raw is None:
                 break
             scale = cfg["process_width"] / raw.shape[1]
             frame = raw if abs(scale - 1) < 1e-3 else cv2.resize(raw, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            cap_ms = (time.perf_counter() - t_cap0) * 1000
         h, w = frame.shape[:2]
         if show and isinstance(gaze, MouseGaze):
             cv2.setMouseCallback(WIN, gaze.on_mouse, (w, h))
 
         t0 = time.perf_counter()
         with telemetry.frame_trace(idx) as tx:
+            _s0 = time.perf_counter()
             with telemetry.span(tx, "detect", n_colors=len(cfg["colors"])):
                 dets = det.detect(wb.apply(frame) if wb is not None else frame)
             with telemetry.span(tx, "track"):
                 tracks = trk.update(dets, t, w)
+            scene_ms = (time.perf_counter() - _s0) * 1000
+            _g0 = time.perf_counter()
             g_raw = gaze.get(idx)
             g = moff.apply(usercal.apply(g_raw))
+            if g is not None:
+                g = (min(1.0, max(0.0, g[0])), min(1.0, max(0.0, g[1])))
             gaze_px = (g[0] * w, g[1] * h) if g is not None else None
             closed = gaze.eyes_closed(idx)
+            gaze_ms = (time.perf_counter() - _g0) * 1000
+            _f0 = time.perf_counter()
             with telemetry.span(tx, "select"):
                 if closed:                      # blinking: keep the target and freeze its dwell
                     sel.hold(t)
                     events = []
                 else:
                     events = sel.update(tracks, gaze_px, t, w)
+            fix_ms = (time.perf_counter() - _f0) * 1000
             depth = {tr.id: estimate_depth(tr, cfg, w) for tr in tracks}
             markers = marker.detect(frame) if marker else []
             proc_ms = (time.perf_counter() - t0) * 1000
@@ -282,6 +293,10 @@ def main():
                 "target": None if tgt is None else {"id": tgt.id, "color": tgt.color, "shape": tgt.shape,
                                                     "note": voices[tgt.id].get("note"), "instrument": voices[tgt.id].get("instrument"),
                                                     "dist_px": dist_px, "dwell": round(sel.progress, 2)},
+                "stage_ms": {"cap": round(cap_ms, 2), "pupil": (gaze.health() if hasattr(gaze, "health") else {}).get("model_ms"),
+                             "gaze": round(gaze_ms, 2), "scene": round(scene_ms, 2), "fix": round(fix_ms, 2)},
+                "proc_ms": round(proc_ms, 2),
+                "tracker": gaze.health() if hasattr(gaze, "health") else None,
                 "locks": locks,
                 "last_lock": last_lock_info.get("v"),
             }
