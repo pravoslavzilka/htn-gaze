@@ -1,0 +1,34 @@
+{
+  "piano": {
+    "f0": 262.9115533767741,
+    "prompt": "A single grand piano note, middle C, struck once and left to ring, dry studio recording, no reverb, no other sounds"
+  },
+  "marimba": {
+    "f0": 526.8614520385022,
+    "prompt": "A single wooden marimba note, middle C, one soft mallet hit, dry studio recording, no other sounds"
+  },
+  "flute": {
+    "f0": 262.6548977967863,
+    "prompt": "A single sustained concert flute note, middle C, gentle breathy tone, dry studio recording, no melody"
+  },
+  "strings": {
+    "f0": 65.35570591018477,
+    "prompt": "A single sustained cello note, middle C, legato bow, warm, dry studio recording, no melody"
+  },
+  "bell": {
+    "f0": 213.4916217950775,
+    "prompt": "A single tubular bell note, middle C, one strike ringing out, dry studio recording"
+  },
+  "drum": {
+    "f0": null,
+    "prompt": "A single deep tom drum hit, one stroke, dry studio recording, no other sounds"
+  },
+  "synth": {
+    "f0": 261.2147511966238,
+    "prompt": "A single warm analog synthesizer pluck note, middle C, dry, no effects, no melody"
+  },
+  "fanfare": {
+    "f0": null,
+    "prompt": "A short cheerful success chime, three rising bell notes, bright, celebratory, clean"
+  }
+}

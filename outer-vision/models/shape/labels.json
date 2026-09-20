@@ -1,0 +1,15 @@
+{
+  "labels": [
+    "round",
+    "square",
+    "cylinder",
+    "triangle",
+    "reject"
+  ],
+  "input_size": 96,
+  "arch": "mobilenet",
+  "synthetic_val_acc": 1.0,
+  "real_val_acc": null,
+  "trained": "2026-09-19 22:28",
+  "real_data": null
+}

@@ -1,0 +1,4 @@
+numpy<2.1
+opencv-python<4.11   # >=4.7 needed for cv2.aruco.ArucoDetector; runs the ONNX shape net too
+sounddevice          # speaker: Maestro's voice and tools/synth.py (no microphone is used)
+sentry-sdk           # optional: tracing/logs when SENTRY_DSN is set
