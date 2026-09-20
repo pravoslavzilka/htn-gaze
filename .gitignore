@@ -19,3 +19,5 @@ calib/gaze_live_v1_old.py
 .env
 *.env
 !.env.example
+laptop/sounds/
+laptop/omni_interactions.jsonl
