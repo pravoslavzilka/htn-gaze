@@ -36,14 +36,24 @@ class SchemaTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
-    def test_packet_uses_only_real_fields(self):
-        st = {"t": 5.0, "frame_w": 640, "frame_h": 360, "gaze_px": [320, 180], "eyes_closed": False,
-              "target": {"color": "red", "shape": "square"}}
-        p = ovn_bridge.packet(st, 3)
+    ST = {"t": 5.0, "frame_w": 640, "frame_h": 360, "gaze_px": [320, 180], "eyes_closed": False,
+          "target": {"color": "red", "shape": "square"}}
+
+    def test_old_app_build_has_no_timings_and_they_stay_null(self):
+        p = ovn_bridge.packet(self.ST, 3)
         self.assertEqual((p["obj"], p["gx"], p["gy"], p["conf"], p["ev"]), ("red square", 0.5, 0.5, 1.0, []))
-        self.assertIsNone(p["scene_ms"])                     # timings are unknown: NULL, never invented
-        p = ovn_bridge.packet({**st, "gaze_px": None, "target": None, "eyes_closed": True}, 4)
+        self.assertIsNone(p["scene_ms"])
+        p = ovn_bridge.packet({**self.ST, "gaze_px": None, "target": None, "eyes_closed": True}, 4)
         self.assertEqual((p["obj"], p["conf"], p["ev"]), (None, 0.0, ["blink"]))
+
+    def test_patched_app_reports_real_timings_and_pupil_confidence(self):
+        st = {**self.ST, "stage_ms": {"cap": 6.1, "pupil": 0.4, "gaze": 0.3, "scene": 41.7, "fix": 0.5},
+              "tracker": {"connected": True, "n": 2, "pupil_ok": 1}}
+        p = ovn_bridge.packet(st, 9)
+        self.assertEqual((p["cap_ms"], p["scene_ms"], p["conf"]), (6.1, 41.7, 0.5))
+        st["tracker"] = {"connected": False, "n": 0, "pupil_ok": 2}
+        p = ovn_bridge.packet(st, 10)
+        self.assertEqual((p["conf"], p["ev"]), (0.0, ["camera_error"]))
 
 
 if __name__ == "__main__":

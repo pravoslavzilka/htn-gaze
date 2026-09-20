@@ -5,10 +5,11 @@ closed). This sends one packet per new status, exactly like the Pi would, so the
 
   python ovn_bridge.py --run test1 [--host 127.0.0.1] [--port 9999]
 
-What is REAL here: time, object looked at (colour + shape), gaze point, blink (eyes closed), packet cadence.
-What is NOT available from the app and is therefore left EMPTY (NULL in Tiger, never faked): the five stage timings.
-conf is a stand-in: 1.0 while the app has a gaze point, 0.0 while it has none (eyes closed / no pupil). It is not a
-pupil-fit confidence. Latency panels stay empty until the real Pi pipeline sends timings.
+What is measured (run.py with the timing patch, --status-file): the five stage timings (cap = frame read+resize,
+pupil = pupil/iris -> gaze model on this laptop, gaze = calibration mapping, scene = colour detect + track,
+fix = fixation/dwell select), pupil confidence (usable pupil fits / 2 eyes), gaze point, object looked at, blinks.
+Not measured: the on-board (QNX) pupil-fit time; the board only reports its inference rate. An older run.py without
+the patch sends no timings (stored as NULL, never invented) and a binary conf.
 """
 import argparse
 import json
@@ -24,12 +25,15 @@ from gaze_sender import GazeSender  # noqa: E402
 def packet(st, f):
     w, h = st.get("frame_w") or 1, st.get("frame_h") or 1
     gp, tgt, closed = st.get("gaze_px"), st.get("target"), bool(st.get("eyes_closed"))
-    have_gaze = gp is not None and not closed
-    return {"f": f, "t": st["t"], "cap_ms": None, "pupil_ms": None, "gaze_ms": None, "scene_ms": None, "fix_ms": None,
-            "conf": 1.0 if have_gaze else 0.0,
-            "gx": round(gp[0] / w, 4) if gp else None, "gy": round(gp[1] / h, 4) if gp else None,
-            "obj": f"{tgt['color']} {tgt['shape']}" if tgt else None, "obj_conf": None,
-            "ev": ["blink"] if closed else []}
+    stage, trk = st.get("stage_ms") or {}, st.get("tracker")
+    if trk is not None:                              # real: how many of the two eyes have a usable pupil fit
+        conf = 0.0 if closed or not trk.get("n") else trk.get("pupil_ok", 0) / 2
+    else:                                            # older app build without a tracker: 1 if it has a gaze point
+        conf = 1.0 if (gp is not None and not closed) else 0.0
+    ev = (["blink"] if closed else []) + (["camera_error"] if trk is not None and not trk.get("connected", True) else [])
+    return {"f": f, "t": st["t"], **{f"{k}_ms": stage.get(k) for k in ("cap", "pupil", "gaze", "scene", "fix")},
+            "conf": conf, "gx": round(gp[0] / w, 4) if gp else None, "gy": round(gp[1] / h, 4) if gp else None,
+            "obj": f"{tgt['color']} {tgt['shape']}" if tgt else None, "obj_conf": None, "ev": ev}
 
 
 def main():

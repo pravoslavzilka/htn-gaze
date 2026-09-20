@@ -20,15 +20,16 @@ CREATE TABLE IF NOT EXISTS omni_interactions (
 SELECT create_hypertable('omni_interactions', 'time', if_not_exists => TRUE);
 
 -- 10-second buckets per run and object. Frame count = dwell (frames / fps = seconds). Total latency is the sum of the
--- five stages and is NULL when a stage is missing, so frames without stage timings never drag the average to zero.
+-- stages that were measured, and NULL for frames with no timings at all (scene_ms is the marker), so untimed frames never
+-- drag the average to zero.
 -- Tracking loss uses conf < 0.5 (the receiver's TRACKING_LOST_CONF default); change both together.
 -- materialized_only = false: queries also read the not-yet-materialized newest rows, so the live demo is current.
 CREATE MATERIALIZED VIEW IF NOT EXISTS gaze_10s
 WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
 SELECT time_bucket('10 seconds', time) AS bucket, run, obj,
        count(*)::int AS frames,
-       avg(cap_ms + pupil_ms + gaze_ms + scene_ms + fix_ms)::real AS avg_total_ms,
-       max(cap_ms + pupil_ms + gaze_ms + scene_ms + fix_ms)::real AS max_total_ms,
+       avg(CASE WHEN scene_ms IS NOT NULL THEN coalesce(cap_ms,0) + coalesce(pupil_ms,0) + coalesce(gaze_ms,0) + scene_ms + coalesce(fix_ms,0) END)::real AS avg_total_ms,
+       max(CASE WHEN scene_ms IS NOT NULL THEN coalesce(cap_ms,0) + coalesce(pupil_ms,0) + coalesce(gaze_ms,0) + scene_ms + coalesce(fix_ms,0) END)::real AS max_total_ms,
        avg((conf IS NULL OR conf < 0.5)::int)::real AS tracking_loss_rate
 FROM gaze_frames
 GROUP BY bucket, run, obj
