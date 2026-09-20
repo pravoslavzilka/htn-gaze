@@ -89,7 +89,7 @@ def fetch_scene(base):
         return None
 
 
-def preflight(scene_url, eye_url, out_dir):
+def preflight(scene_url, eye_url, out_dir, min_corners=4):
     """Check the eye camera sees a face, and that the scene camera sees all four screen corners uncut."""
     print("Checking the eye camera ...", flush=True)
     pack, _ = fetch_pack(eye_url)
@@ -112,7 +112,7 @@ def preflight(scene_url, eye_url, out_dir):
               "eye camera is sharp with both eyes in the middle of its picture. Then run again.")
         return False
     print("Checking that the scene camera sees the whole screen ...", flush=True)
-    ok = True
+    ok, n_good = True, 0
     for name, (x, y) in (("top-left", (0.06, 0.08)), ("top-right", (0.94, 0.08)),
                          ("bottom-left", (0.06, 0.92)), ("bottom-right", (0.94, 0.92))):
         set_state(phase="blank")
@@ -140,10 +140,14 @@ def preflight(scene_url, eye_url, out_dir):
         cut = bx <= 1 or by <= 1 or bx + bw >= w - 1 or by + bh >= h - 1
         print(f"  {name:13s}: found at ({r[0]:.0f},{r[1]:.0f})" + ("  -- touches the image edge, re-aim" if cut else ""))
         ok = ok and not cut
+        n_good += 0 if cut else 1
     set_state(phase="blank")
-    if not ok:
-        print("  Re-aim the scene camera so the WHOLE screen is well inside the image, then run again.")
-    return ok
+    if n_good >= min_corners:
+        if not ok:
+            print(f"  continuing with {n_good} of 4 corners visible; squares near the hidden corner will not be scored")
+        return True
+    print("  Re-aim the scene camera so the WHOLE screen is well inside the image, then run again.")
+    return False
 
 
 def collect(eye_url, scene_url, targets, hold, out_dir):
@@ -184,14 +188,15 @@ def collect(eye_url, scene_url, targets, hold, out_dir):
         dets = [s["det"] for s in samples if s["det"] is not None]
         n_eye_ok = sum(1 for s in samples if s["res"]["ok"])
         n_ok = sum(1 for s in samples if s["res"]["ok"] and s["det"] is not None)
+        n_pup = sum(1 for s in samples if s["res"]["ok"] and s["det"] is not None and all(e.get("pupil_ok") for e in s["res"]["eyes"]))
         rec = {"kind": kind, "screen": [tx, ty], "color": color, "n_samples": len(samples), "n_det": len(dets),
-               "n_eye_ok": n_eye_ok, "n_ok": n_ok, "samples": samples}
+               "n_eye_ok": n_eye_ok, "n_ok": n_ok, "n_pupil": n_pup, "samples": samples}
         if len(dets) >= 3:
             rec["scene_xy"] = [float(np.median([d[0] for d in dets])), float(np.median([d[1] for d in dets]))]
         status = "ok" if n_ok >= 5 else "FAILED"
         records.append(rec)
         print(f"  [{i + 1}/{len(targets)}] {kind:5s} screen=({tx:.2f},{ty:.2f})  usable {n_ok}/{len(samples)}"
-              f"  (eyes ok {n_eye_ok}, square seen {len(dets)})  {status}", flush=True)
+              f"  (eyes ok {n_eye_ok}, pupil fit {n_pup}, square seen {len(dets)})  {status}", flush=True)
         if last_img is not None and "scene_xy" in rec:
             im = last_img.copy()
             d = ImageDraw.Draw(im)

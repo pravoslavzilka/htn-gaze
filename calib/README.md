@@ -65,3 +65,17 @@ Requirements for a good run: rigid rig (both cameras fixed relative to the head)
 - The mapping is exact only at the calibration distance (the scene camera is a few centimetres from the eye) and only while the rig does not move.
 - The scene-camera field of view is assumed; error in degrees is approximate.
 - Defaults assume a Windows machine (`run_showcase.sh` opens the browser with PowerShell).
+
+## Later additions
+
+- `gaze_geom.py`: Python port of the pupil-in-eye branch's geometric gaze model (matches its JavaScript to ~12 decimals on live data).
+- `collect_geom.py`: records the calibration squares together with the raw eye landmarks (`/api/state`) so any gaze model can be scored offline.
+- `eval_geom.py`: scores the geometric model (as shipped, axis flips, centre offset, fitted rig parameters) against the polynomial calibration,
+  by held-out squares or leave-one-out when too few squares are usable.
+- `ab_measure.py`, `consistency.py`: measure how often both eyes are found and how steady the iris position is over a fixed window.
+- `features.py` / `fitlib.py` / `calibrate.py`: extra feature kinds for the board-side dark pupil (`pupil_avg`, `pupil_lr`); the corner check can proceed with 3 of 4 corners.
+
+Findings on one recording (18 usable squares, leave-one-out, mean error): geometry as shipped about 11 to 15 degrees; only a centre offset did not help;
+with the eye centre held fixed and 5 fitted rig parameters about 4.1 degrees, the same as our polynomial calibration (about 4.2 degrees). The fitted reticle depth
+and eye distance were not physical (they hit the search limits), so treat the model as an empirical mapping. Holding the eye centre fixed improved every method:
+the per-frame corner midpoint from the close-up build is noisy. The lower part of the screen had no usable data (lids cover the iris when looking down).

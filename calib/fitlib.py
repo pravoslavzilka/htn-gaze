@@ -10,7 +10,7 @@ import json
 
 import numpy as np
 
-from features import KINDS, feature_vector, unflat
+from features import KINDS, feature_vector, unflat, usable
 
 
 def design(z, degree):
@@ -47,10 +47,13 @@ def _samples(rec, kind):
     """Feature matrix and per-sample targets for the usable samples of one square."""
     F, Y = [], []
     for s in rec["samples"]:
-        if s["det"] is None or not s["res"]["ok"]:
+        res = unflat(s["res"])
+        if s["det"] is None or not usable(kind, res):
             continue
-        F.append(feature_vector(kind, unflat(s["res"])))
+        F.append(feature_vector(kind, res))
         Y.append(s["det"])
+    if not F:
+        return np.zeros((0, 1)), np.zeros((0, 2))
     return np.array(F).reshape(len(F), -1), np.array(Y).reshape(len(Y), 2)
 
 
@@ -63,10 +66,10 @@ def _square_error(m, kind, rec):
 
 
 def evaluate(recs, kind, degree):
-    cal = [r for r in recs if r["kind"] == "cal" and r.get("scene_xy") and r["n_ok"] >= 5]
-    val = [r for r in recs if r["kind"] == "val" and r.get("scene_xy") and r["n_ok"] >= 5]
+    cal = [r for r in recs if r["kind"] == "cal" and r.get("scene_xy") and len(_samples(r, kind)[0]) >= 5]
+    val = [r for r in recs if r["kind"] == "val" and r.get("scene_xy") and len(_samples(r, kind)[0]) >= 5]
     if len(cal) < 8:
-        return None
+        return {"kind": kind, "degree": degree, "skipped": True, "n_cal": len(cal), "n_val": len(val)}
     data = [_samples(r, kind) for r in cal]
     loo = []
     for i, r in enumerate(cal):
@@ -90,12 +93,12 @@ def select_model(recs, ppd=14.5, log=print):
     best = None
     for kind in KINDS:
         for degree in (1, 2):
-            if degree == 2 and kind == "ref_lr":
+            if degree == 2 and kind in ("ref_lr", "pupil_lr"):
                 continue
             r = evaluate(recs, kind, degree)
-            if r is None:
-                log("  not enough good squares to fit.")
-                return None
+            if r.get("skipped"):
+                log(f"  {kind:10s} {degree:>3d}  skipped: only {r['n_cal']} calibration squares have usable samples for this feature")
+                continue
             v = "-" if r["val"] is None else f"{r['val']:.1f} px / {r['val'] / ppd:.1f} deg"
             log(f"  {kind:10s} {degree:>3d}  {r['n_samples']:>7d}  {r['loo']:>12.1f} px        {v:>18s}")
             score = r["val"] if r["val"] is not None else r["loo"]

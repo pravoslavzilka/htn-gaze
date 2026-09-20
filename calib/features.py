@@ -118,6 +118,15 @@ def measure_eye(pack, i, crop_rgb):
         if m["fit_ok"]:
             m["iris"] = np.array([fx + e["x0"], fy + e["y0"]])
             m["r"] = fr
+    # dark-pupil fit done on the board by the pupil-in-eye branch (absent on the older build)
+    if "pupil" in e:
+        m["pupil_ok"] = bool(e.get("pupil_ok", 0))
+        m["pupil"] = np.array([e["pupil"][0] * vw, e["pupil"][1] * vh])
+        m["pupil_r"] = float(e.get("pupil_r", 0.0) * vw)
+    else:
+        m["pupil_ok"] = False
+        m["pupil"] = iris_mp.copy()
+        m["pupil_r"] = 0.0
     return m
 
 
@@ -146,6 +155,7 @@ class EyeTracker:
             m["ref_center"], m["ref_width"] = ref_c, ref_w
             m["off_ref"] = (m["iris"] - ref_c) / ref_w          # refined iris vs steady eye reference
             m["off_mp"] = (m["iris_mp"] - ref_c) / ref_w        # raw MediaPipe iris vs the same reference
+            m["off_pupil"] = (m["pupil"] - ref_c) / ref_w       # board-side dark pupil vs the same reference
             m["blink"] = bool(m["open"] < 0.6 * ref_open or m["open"] < 0.08)
             # A failed circle fit is not a reason to drop the sample: with the lids covering most of the iris there is
             # little edge to fit, and MediaPipe's own estimate (already stored in m["iris"]) is used instead.
@@ -156,7 +166,15 @@ class EyeTracker:
 
 
 # ---------------------------------------------------------------- feature vectors
-KINDS = ("ref_avg", "ref_lr", "ref_open", "mp_avg")
+KINDS = ("ref_avg", "ref_lr", "ref_open", "mp_avg", "pupil_avg", "pupil_lr")
+
+
+def usable(kind, res):
+    """A sample is usable for a feature kind if the eyes are not blinking and, for the pupil kinds, the
+    board-side pupil fit succeeded on both eyes."""
+    if not res["ok"]:
+        return False
+    return all(e.get("pupil_ok") for e in res["eyes"]) if kind.startswith("pupil") else True
 
 
 def feature_vector(kind, res):
@@ -169,6 +187,10 @@ def feature_vector(kind, res):
         return np.concatenate([(L["off_ref"] + R["off_ref"]) / 2, [(L["open"] / L["ref_width"] + R["open"] / R["ref_width"]) / 2]])
     if kind == "mp_avg":
         return (L["off_mp"] + R["off_mp"]) / 2
+    if kind == "pupil_avg":
+        return (L["off_pupil"] + R["off_pupil"]) / 2
+    if kind == "pupil_lr":
+        return np.concatenate([L["off_pupil"], R["off_pupil"]])
     raise ValueError(kind)
 
 
