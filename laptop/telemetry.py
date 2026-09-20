@@ -112,7 +112,7 @@ class FrameTelemetry:
             tx.set_data("conf", pkt.get("conf"))
             tx.set_data("fps", d.get("fps"))
             if spans:
-                tx.set_measurement("total_ms", total, "millisecond")
+                tx.set_data("total_ms", total)
             for stage, s, e in spans:
                 sp = tx.start_child(op=stage, description=f"pipeline {stage}", start_timestamp=s)
                 sp.finish(end_timestamp=e)

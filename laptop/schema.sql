@@ -38,3 +38,24 @@ WITH NO DATA;
 SELECT add_continuous_aggregate_policy('gaze_10s',
   start_offset => INTERVAL '1 hour', end_offset => INTERVAL '10 seconds',
   schedule_interval => INTERVAL '30 seconds', if_not_exists => TRUE);
+
+-- Sounds OMNI created, playable by name. audio = raw mono PCM16 at sample_rate.
+CREATE TABLE IF NOT EXISTS sound_library (
+  name TEXT PRIMARY KEY, prompt TEXT, seconds REAL, sample_rate INT NOT NULL DEFAULT 24000, audio BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_by TEXT DEFAULT 'omni', plays INT NOT NULL DEFAULT 0);
+
+-- HARD NO: these colours can never be created, replaced or deleted in the library, by anyone (also enforced in code).
+CREATE OR REPLACE FUNCTION protect_builtin_colors() RETURNS trigger AS $$
+BEGIN
+  IF lower(coalesce(NEW.name, OLD.name)) = ANY (ARRAY['blue', 'green', 'yellow', 'red', 'orange']) THEN
+    RAISE EXCEPTION 'sound "%" is a protected colour and cannot be created, changed or deleted', coalesce(NEW.name, OLD.name);
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER protect_builtin_colors_trg
+BEFORE INSERT OR UPDATE OR DELETE ON sound_library
+FOR EACH ROW EXECUTE FUNCTION protect_builtin_colors();

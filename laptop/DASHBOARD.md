@@ -40,6 +40,17 @@ The gaze app must be started with `--status-file` (the launcher does) and `--str
 - **Tiger** = product data: what was looked at, dwell, attention, OMNI interactions (`gaze_frames`, `gaze_10s`, `omni_interactions`).
 - **Sentry** = system health: stage latency, tracking loss, errors, OMNI/ElevenLabs call performance, dashboard replays.
 
+## Sound library (OMNI writes and plays tones)
+- "OMNI, create a sound for pink" -> OMNI asks ElevenLabs, saves the sound to Tiger (`sound_library`: name, prompt, seconds,
+  audio as PCM16 24 kHz) and to `laptop/sounds/` as a cache, says "It was added", and plays it.
+- "OMNI, play the pink tone" -> plays it from Tiger (from the cache if Tiger is down). "What sounds do you have?" is answered
+  from the library list. Cached sounds Tiger does not have yet are uploaded at startup.
+- **Hard no: blue, green, yellow, red, orange** can never be created, replaced or deleted. Enforced three times: the code refuses
+  before any ElevenLabs credit is spent (also for compound names like "dark red"), a Postgres trigger on `sound_library` rejects
+  the write from any client, and the model is only told to emit the action (the code decides and speaks the refusal). Playing
+  a protected colour says it is built in: look at the object to hear the instrument's own tone.
+- Old red/green files in `laptop/sounds/` predate the lock. They are left untouched and are not served or imported.
+
 ## Sentry
 - **Tracing**: `gaze_pipeline` transactions are rebuilt from the packet durations for 1 in `TRACE_EVERY_N` frames (30) and
   for anomalies (at most one per second), with child spans `cap pupil gaze scene fix`, ending at the receive time.

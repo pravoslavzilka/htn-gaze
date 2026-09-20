@@ -41,3 +41,6 @@ with psycopg.connect(config.TIGER_DSN, connect_timeout=10, autocommit=True) as c
     print("\nOMNI interactions (latest 8):")
     for r in c.execute(f"select time, run, object, transcript, answer, latency_ms from omni_interactions {'where run=%s' if a.run else ''} order by time desc limit 8", params):
         print(f"  {r[0]:%H:%M:%S} [{r[1]}] on {r[2] or '-'}: {r[3]!r} -> {r[4]!r} ({r[5]:.0f} ms)")
+    print("\nsound library (created by OMNI; blue/green/yellow/red/orange are protected and never appear here):")
+    for name, prompt, secs, plays, by, at in c.execute("select name, prompt, seconds, plays, created_by, updated_at from sound_library order by name"):
+        print(f"  {name:<12} {secs:.1f}s  played {plays}x  by {by}  {at:%H:%M:%S} UTC  {prompt!r}")

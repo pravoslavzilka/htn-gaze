@@ -31,6 +31,8 @@ import urllib.request
 from pathlib import Path
 
 import config
+import library as soundlib
+import queries
 import telemetry
 from eleven import SR, Eleven, ElevenError
 from voice_io import Listener, Player, read_wav, record_until_enter, to_wav
@@ -54,6 +56,14 @@ reading of the picture; if LOOK is unavailable, use a colour they named or the p
 You can ask ElevenLabs to generate a sound for a colour. Write a short sound-effect description that suits the
 colour (red = warm, bold, brassy; blue = calm, watery, soft chime; yellow = bright, sparkling; green = organic,
 wooden marimba; ...).
+
+SOUND LIBRARY: every sound you create is saved to a library and can be played back later. Each request ends with
+LIBRARY: the names available. When they ask to play, hear or replay a tone/sound from the library, reply with the action
+{"type": "play_sound", "name": "<the colour/name they said>"} and say "Playing the <name> tone." If they ask what sounds
+exist, answer from LIBRARY with no action.
+LOCKS AND AVAILABILITY ARE DECIDED BY THE SYSTEM, NOT BY YOU: always emit the action the wearer asked for (create_sound
+for a colour, play_sound for a name), whatever the colour. The system refuses locked colours and missing sounds and speaks
+the result itself. Never refuse, never say a colour is protected, never say a sound is missing.
 
 WAKE WORD: the microphone is always on and hears everything, including other people and TV. Each request ends
 with STATE: asleep or STATE: awake.
@@ -287,8 +297,9 @@ def safe_name(s):
 
 
 class Voice:
-    def __init__(self, player=None, eleven=None, sink=None, run="live"):
+    def __init__(self, player=None, eleven=None, sink=None, run="live", library=None):
         self.player, self.eleven = player, eleven or Eleven()
+        self.library = library or soundlib.Library(None, SOUNDS)
         self.sink, self.run = sink, run              # sink.add_omni(row): Tiger's omni_interactions
         self.speak_lock = threading.Lock()
         self.working = False                    # true from request start until the answer (and new sound) finished
@@ -349,16 +360,16 @@ class Voice:
         color = safe_name(action.get("color"))
         seconds = min(3.0, max(0.5, float(action.get("seconds") or 1.5)))
         prompt = str(action.get("prompt") or f"a short musical note that sounds like the colour {color}")[:300]
+        if soundlib.is_protected(color):                 # belt and braces: never spend a credit on a protected colour
+            raise soundlib.ProtectedError(color)
         t0 = time.monotonic()
         pcm = self.eleven.sfx(prompt, seconds)
-        SOUNDS.mkdir(exist_ok=True)
-        path = SOUNDS / f"{color}.wav"
-        path.write_bytes(to_wav(__import__("numpy").frombuffer(pcm, "<i2"), SR))
-        idx_path = SOUNDS / "index.json"
-        idx = json.loads(idx_path.read_text()) if idx_path.exists() else {}
-        idx[color] = {"file": path.name, "prompt": prompt, "seconds": seconds}
-        idx_path.write_text(json.dumps(idx, indent=1))
-        return color, pcm, round((time.monotonic() - t0) * 1000)
+        with telemetry.span(getattr(self, "_tx", None), "library.write", "save to library", sound=color) as sp:
+            saved = self.library.save(color, pcm, prompt, seconds)        # Tiger + local cache
+            if sp is not None:
+                sp.set_data("in_tiger", saved["tiger"])
+        self.library_last = saved
+        return saved["name"], pcm, round((time.monotonic() - t0) * 1000)
 
     def handle(self, audio=None, text=None, scene=None, look=None):
         """One request. audio: int16 mono 16 kHz samples, or text: str. Returns the parsed reply or None."""
@@ -379,7 +390,8 @@ class Voice:
                 to_wav(audio, 16000)).decode(), "format": "wav"}})
         request = text or "The wearer's request is in the audio."
         user.append({"type": "text", "text": request + "\nLOOK: " + (json.dumps(look) if look else "unavailable")
-                     + "\nSTATE: " + ("awake" if self.awake else "asleep")})
+                     + "\nSTATE: " + ("awake" if self.awake else "asleep")
+                     + "\nLIBRARY: " + json.dumps(self.library.names())})
         try:
             with telemetry.span(tx, "gen_ai.chat", f"chat {MODEL}", **{
                     "gen_ai.system": "omni", "gen_ai.request.model": MODEL, "gen_ai.operation.name": "chat",
@@ -414,10 +426,33 @@ class Voice:
         if tx is not None:
             tx.set_tag("actions", ",".join(a.get("type", "?") for a in reply["actions"]) or "none")
             tx.set_data("object", (look or {}).get("color"))
-            tx.set_measurement("understand_ms", omni_ms, "millisecond")
+            tx.set_data("understand_ms", omni_ms)
+        refused = None
         for a in reply["actions"]:
-            if a.get("type") == "create_sound" and not go_sleep:
+            if go_sleep:
+                break
+            kind = a.get("type")
+            if kind == "create_sound":
+                if soundlib.is_protected(a.get("color")):     # a hard no, checked here whatever the model said
+                    refused = safe_name(a.get("color"))
+                    continue
                 jobs.append(self._start_job(a, record, tx))
+            elif kind == "play_sound":
+                nm = safe_name(a.get("name") or a.get("color"))
+                if soundlib.is_protected(nm):
+                    refused = None
+                    reply["say"] = f"{nm} is a built-in colour, so it is not in the library. Look at the {nm} object to hear its tone."
+                    record["results"].append({"play": nm, "built_in": True})
+                elif nm not in self.library.names(ttl=0):
+                    reply["say"] = f"I don't have a sound for {nm} yet."
+                    record["results"].append({"play": nm, "found": False})
+                else:
+                    reply["say"] = f"Playing the {nm} tone."
+                    jobs.append(self._start_play(a, record, tx))
+        if refused:
+            reply["say"] = f"Sorry, {refused} is a protected colour, so I can't change its sound."
+            record["results"].append({"refused": refused})
+            print(f"(refused: {refused} is protected)", flush=True)
         self.say(reply["say"] or ("On it." if jobs else ""), tx)
         for th in jobs:
             th.join()
@@ -432,8 +467,12 @@ class Voice:
     def _start_job(self, action, record, tx=None):
         def run():          # runs on its own thread, so it attaches to the request's transaction explicitly
             try:
+                self._tx = tx
                 with telemetry.span(tx, "elevenlabs.sound_generation", "sound effect", color=str(action.get("color"))):
                     color, pcm, ms = self.create_sound(action)
+            except soundlib.ProtectedError as e:
+                self.say(f"Sorry, {e} is a protected colour, so I can't change its sound.", tx)
+                return
             except (ElevenError, ValueError, OSError) as e:
                 log.error("sound generation failed: %s", e)
                 record["results"].append({"error": str(e)[:200]})
@@ -447,6 +486,35 @@ class Voice:
         th = threading.Thread(target=run, daemon=True)
         th.start()
         return th
+
+
+def _play_from_library(self, action, record, tx=None):
+    """Play a stored tone by name (from Tiger, or the local cache if Tiger is down). Runs on its own thread."""
+    def run():
+        name = safe_name(action.get("name") or action.get("color"))
+        if soundlib.is_protected(name):
+            self.say(f"{name} is a built-in colour. Look at the object to hear its tone.", tx)
+            return
+        with telemetry.span(tx, "library.play", "play from library", sound=name):
+            got = self.library.get(name)
+        if got is None:
+            record["results"].append({"play": name, "found": False})
+            self.say(f"I don't have a sound for {name} yet.", tx)
+            return
+        pcm, sr, source = got
+        record["results"].append({"play": name, "source": source})
+        if self.player is None:
+            print(f"(would play '{name}': {len(pcm) / 2 / sr:.1f}s from {source})", flush=True)
+            return
+        with self.speak_lock:                      # wait until OMNI has finished saying "Playing ..."
+            self.player.feed(pcm)
+            self.player.wait()
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    return th
+
+
+Voice._start_play = _play_from_library
 
 
 def main():
@@ -474,7 +542,11 @@ def main():
     if config.TIGER_DSN and not a.no_tiger:
         from tiger import TigerWriter
         sink = TigerWriter(config.TIGER_DSN).start()
-    voice = Voice(None if a.no_audio_out else Player(SR), sink=sink, run=a.run)
+    db = queries.Db(config.TIGER_DSN) if config.TIGER_DSN and not a.no_tiger else None
+    library = soundlib.Library(db, SOUNDS)
+    threading.Thread(target=lambda: log.info("sound library: %d local sound(s) synced to Tiger", library.sync_local()),
+                     daemon=True).start()
+    voice = Voice(None if a.no_audio_out else Player(SR), sink=sink, run=a.run, library=library)
     if a.text or a.wav:
         audio = read_wav(a.wav)[0] if a.wav else None
         voice.handle(audio=audio, text=a.text, scene=app.frame(), look=summarize([app.look()] if app.look() else []))

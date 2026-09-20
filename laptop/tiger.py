@@ -21,10 +21,22 @@ OMNI_INSERT = f"INSERT INTO omni_interactions ({','.join(OMNI_COLS)}) VALUES ({'
 
 
 def schema_statements():
-    """schema.sql split into single statements (comments removed)."""
-    text = "\n".join(l for l in Path(__file__).with_name("schema.sql").read_text().splitlines()
-                     if not l.strip().startswith("--"))
-    return [s.strip() for s in re.split(r";\s*(?:\n|$)", text) if s.strip()]
+    """schema.sql split into single statements: comments removed, and semicolons inside $$ ... $$ bodies kept."""
+    lines = Path(__file__).with_name("schema.sql").read_text().splitlines()
+    text = "\n".join(l for l in lines if not l.strip().startswith("--"))
+    out, cur, in_body = [], [], False
+    for part in re.split(r"(\$\$|;)", text):
+        if part == "$$":
+            in_body = not in_body
+        if part == ";" and not in_body:
+            stmt = "".join(cur).strip()
+            if stmt:
+                out.append(stmt)
+            cur = []
+        else:
+            cur.append(part)
+    tail = "".join(cur).strip()
+    return out + ([tail] if tail else [])
 
 
 class TigerWriter:
