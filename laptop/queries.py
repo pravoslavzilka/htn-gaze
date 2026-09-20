@@ -2,10 +2,12 @@
 handle, and the connection is re-opened on the next call."""
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 log = logging.getLogger("queries")
 BUCKET_S = 10
+BACKOFF_S = 5.0
 NO_OBJECT = "(no object)"
 STAGES = ("cap", "pupil", "gaze", "scene", "fix")
 
@@ -18,23 +20,36 @@ class Db:
     def __init__(self, dsn):
         self.dsn, self.conn, self.lock = dsn, None, threading.Lock()
         self.ok = None                    # last query succeeded? (None = never tried)
+        self.retry_at = 0.0               # circuit breaker: after a failure, fail fast until then
 
-    def q(self, sql, params=()):
+    def _fail_fast(self):
+        """While Tiger is down, answer instantly instead of every request waiting out its own connect timeout
+        (which piled up the 1 s dashboard polling until the API stalled)."""
         if not self.dsn:
             raise QueryError("TIGER_DSN not set")
+        wait = self.retry_at - time.monotonic()
+        if wait > 0:
+            raise QueryError(f"Tiger unreachable (retrying in {wait:.0f}s)")
+
+    def _failed(self):
+        self.ok = False
+        self.retry_at = time.monotonic() + BACKOFF_S
+
+    def q(self, sql, params=()):
+        self._fail_fast()
         with self.lock:
             try:
                 if self.conn is None or self.conn.closed:
                     import psycopg
                     # prepare_threshold=None: psycopg auto-prepares a query after 5 uses, and TimescaleDB's generic plan for
                     # "ORDER BY time DESC LIMIT $1" then returns DUPLICATE rows (seen live: 8 rows from a 5-row table).
-                    self.conn = psycopg.connect(self.dsn, connect_timeout=4, autocommit=True, prepare_threshold=None,
+                    self.conn = psycopg.connect(self.dsn, connect_timeout=3, autocommit=True, prepare_threshold=None,
                                                 options="-c statement_timeout=4000")
                 rows = self.conn.execute(sql, params).fetchall()
                 self.ok = True
                 return rows
             except Exception as e:
-                self.ok = False
+                self._failed()
                 try:
                     if self.conn:
                         self.conn.close()
@@ -44,6 +59,7 @@ class Db:
                 raise QueryError(str(e)[:200]) from None
 
     def execute(self, sql, params=()):
+        self._fail_fast()
         with self.lock:
             try:
                 if self.conn is None or self.conn.closed:
@@ -52,7 +68,7 @@ class Db:
                 self.conn.execute(sql, params)
                 self.ok = True
             except Exception as e:
-                self.ok = False
+                self._failed()
                 self.conn = None
                 raise QueryError(str(e)[:200]) from None
 

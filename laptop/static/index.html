@@ -224,7 +224,7 @@ async function updateHealth() {
   const t = h.tiger;
   setPill("pTiger", !t.enabled ? "" : t.reachable === false ? "bad" : t.buffered > 500 ? "warn" : "ok",
     !t.enabled ? "Tiger off" : t.reachable === false ? "Tiger down (buffering " + t.buffered + ")" : "Tiger · " + t.inserted + " rows");
-  setPill("pSentry", h.sentry ? "ok" : "", h.sentry ? "Sentry on" : "Sentry off");
+  setPill("pSentry", h.sentry ? "ok" : "", (h.sentry ? "Sentry server on" : "Sentry server off") + " · browser " + (window.__sentryBrowser || "off"));
 }
 async function updateRuns() {
   const r = await api("/api/runs");
@@ -306,6 +306,7 @@ $("resetBtn").onclick = async () => {
       tracesSampleRate: 1.0, replaysSessionSampleRate: 1.0, replaysOnErrorSampleRate: 1.0,
       tracePropagationTargets: [location.origin] });
     Sentry.setTag("app", "gaze-dashboard");
+    window.__sentryBrowser = (Sentry.getReplay && Sentry.getReplay() ? "replay+tracing" : "tracing");
   } else { window.Sentry = window.Sentry || { captureException() {} }; }
   const links = { issues: "Issues", traces: "Trace explorer", logs: "Logs", replays: "Session replays", dashboards: "Sentry dashboard" };
   $("sentryLinks").innerHTML = Object.entries(links).map(([k, t]) => `<a class="btn" target="_blank" rel="noopener" href="${esc(CFG.links[k])}">${t}</a>`).join("");
