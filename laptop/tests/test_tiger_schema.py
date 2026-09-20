@@ -10,7 +10,7 @@ from tiger import TigerWriter, schema_statements  # noqa: E402
 class SchemaTests(unittest.TestCase):
     def test_statements_are_split_and_the_aggregate_is_real_time(self):
         st = schema_statements()
-        self.assertEqual(len(st), 11)                            # incl. the sound_library table, trigger function and trigger
+        self.assertEqual(len(st), 13)                            # incl. the sound_library table, trigger function and trigger
         cagg = [s for s in st if "timescaledb.continuous" in s]
         self.assertEqual(len(cagg), 1)                       # alone: cannot share a transaction with anything else
         self.assertIn("materialized_only = false", cagg[0])
