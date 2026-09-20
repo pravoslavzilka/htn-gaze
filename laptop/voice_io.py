@@ -77,3 +77,53 @@ class Player:
             self._pending = self._pending[n:]
             if n:
                 self.last_audio = time.monotonic()
+
+
+class Listener:
+    """Always-on mic with a simple energy voice-activity detector. utterances() yields (samples, t_start, t_end)
+    for each stretch of speech. Audio is ignored while `is_busy()` is true, so OMNI never hears its own voice."""
+
+    BLOCK = 480                       # 30 ms at 16 kHz
+
+    def __init__(self, is_busy=lambda: False, sr=MIC_SR, min_rms=450.0, end_silence_s=0.8, min_speech_s=0.5, max_s=12.0):
+        self.is_busy, self.sr, self.min_rms = is_busy, sr, min_rms
+        self.end_blocks = int(end_silence_s * sr / self.BLOCK)
+        self.min_blocks = int(min_speech_s * sr / self.BLOCK)
+        self.max_blocks = int(max_s * sr / self.BLOCK)
+        self.floor = 150.0
+        self.level = 0.0              # last block RMS, for a status display
+
+    def utterances(self):
+        import queue
+        import sounddevice as sd
+        q = queue.Queue()
+        pre = collections.deque(maxlen=10)          # 0.3 s before the speech is detected
+        cur, voiced, quiet, t_start, cool = None, 0, 0, 0.0, 0.0
+        with sd.InputStream(samplerate=self.sr, channels=1, dtype="int16", blocksize=self.BLOCK,
+                            callback=lambda d, f, t, s: q.put(d[:, 0].copy())):
+            while True:
+                blk = q.get()
+                now = time.time()
+                if self.is_busy():
+                    cur, voiced, quiet, cool = None, 0, 0, now + 0.6
+                    pre.clear()
+                    continue
+                if now < cool:
+                    continue
+                rms = float(np.sqrt(np.mean(blk.astype(np.float32) ** 2)))
+                self.level = rms
+                loud = rms > max(self.min_rms, self.floor * 3.5)
+                if cur is None:
+                    if not loud:
+                        self.floor = 0.98 * self.floor + 0.02 * rms
+                        pre.append(blk)
+                    else:
+                        cur, voiced, quiet, t_start = list(pre) + [blk], 1, 0, now - 0.3
+                    continue
+                cur.append(blk)
+                voiced, quiet = (voiced + 1, 0) if loud else (voiced, quiet + 1)
+                if quiet >= self.end_blocks or len(cur) >= self.max_blocks:
+                    if voiced >= self.min_blocks:
+                        yield np.concatenate(cur), t_start, now
+                    cur, voiced, quiet = None, 0, 0
+                    pre.clear()

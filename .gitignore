@@ -21,3 +21,5 @@ calib/gaze_live_v1_old.py
 !.env.example
 laptop/sounds/
 laptop/omni_interactions.jsonl
+omni_run.log
+gaze_live_run.log

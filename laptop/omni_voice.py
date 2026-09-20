@@ -5,7 +5,8 @@
       -> speaks "On it."  while ElevenLabs generates the sound in the background
       -> saves sounds/<color>.wav, registers it in sounds/index.json, speaks "It was added.", plays it
 
-  python omni_voice.py                        # push-to-talk on the default mic: Enter starts, Enter stops
+  python omni_voice.py                        # always listening: say "OMNI, ..."
+  python omni_voice.py --ptt                  # push-to-talk instead: Enter starts, Enter stops
   python omni_voice.py --app http://127.0.0.1:8766       # gaze app (calib/gaze_live.py) that reads the colour
   python omni_voice.py --text "create a sound for the color red"     # no mic (testing)
   python omni_voice.py --wav question.wav                            # a recorded question
@@ -27,7 +28,7 @@ from pathlib import Path
 
 import config
 from eleven import SR, Eleven, ElevenError
-from voice_io import Player, read_wav, record_until_enter, to_wav
+from voice_io import Listener, Player, read_wav, record_until_enter, to_wav
 
 log = logging.getLogger("omni_voice")
 HERE = Path(__file__).parent
@@ -48,8 +49,13 @@ You can ask ElevenLabs to generate a sound for a colour. Write a short sound-eff
 colour (red = warm, bold, brassy; blue = calm, watery, soft chime; yellow = bright, sparkling; green = organic,
 wooden marimba; ...).
 
+WAKE WORD: the microphone is always on and hears everything, including other people and TV. Only act when the
+speech is addressed to you by name: it contains "OMNI" (also accept how it may be transcribed: "Omni", "Omnie",
+"Ohm knee", "Hey Omni", "Okay Omni"). If it is not addressed to OMNI, reply {"heard": "<text>", "wake": false}
+and nothing else.
+
 Reply with ONLY one JSON object, no prose, no code fences:
-{"heard": "<what they said>", "say": "<spoken reply>",
+{"heard": "<what they said>", "wake": true, "say": "<spoken reply>",
  "actions": [{"type": "create_sound", "color": "<one lowercase colour word>",
               "prompt": "<sound effect description, max 20 words, one short musical note or sound>",
               "seconds": <1-3>}]}
@@ -117,8 +123,13 @@ class GazeApp:
         try:
             d = json.loads(self._get("/gaze"))
         except Exception as e:
-            log.warning("gaze app unavailable (%s)", e)
+            if not getattr(self, "down", False):      # once per outage, not once per poll
+                log.warning("gaze app unavailable (%s)", e)
+            self.down = True
             return None
+        if getattr(self, "down", False):
+            log.info("gaze app is back")
+        self.down = False
         return d if d.get("valid") and d.get("age", 9) < 1.5 else None
 
     def frame(self):
@@ -149,6 +160,25 @@ class GazeSampler(threading.Thread):
         return summarize(self.samples)
 
 
+class GazeTrail(threading.Thread):
+    """Keeps the last few seconds of gaze readings so an utterance can be matched to what was looked at."""
+
+    def __init__(self, app, every=0.2):
+        super().__init__(daemon=True)
+        import collections
+        self.app, self.every, self.buf = app, every, collections.deque(maxlen=150)
+
+    def run(self):
+        while True:
+            d = self.app.look()
+            if d:
+                self.buf.append((time.time(), d))
+            time.sleep(self.every)
+
+    def window(self, t0, t1):
+        return summarize([d for t, d in list(self.buf) if t0 <= t <= t1 + 0.3])
+
+
 def summarize(samples):
     """Most-looked-at colour over the samples -> {"color", "rgb", "x", "y", "share"} or None."""
     if not samples:
@@ -168,6 +198,10 @@ class Voice:
     def __init__(self, player=None, eleven=None):
         self.player, self.eleven = player, eleven or Eleven()
         self.speak_lock = threading.Lock()
+        self.working = False                    # true from request start until the answer (and new sound) finished
+
+    def busy(self):
+        return self.working or (self.player is not None and self.player.playing)
 
     def say(self, text):
         """Speak with ElevenLabs; if that fails, print it. Never raises."""
@@ -199,6 +233,13 @@ class Voice:
 
     def handle(self, audio=None, text=None, scene=None, look=None):
         """One request. audio: int16 mono 16 kHz samples, or text: str. Returns the parsed reply or None."""
+        self.working = True
+        try:
+            return self._handle(audio, text, scene, look)
+        finally:
+            self.working = False
+
+    def _handle(self, audio, text, scene, look):
         t0 = time.monotonic()
         user = []
         if scene:
@@ -216,6 +257,9 @@ class Voice:
             self.say("Sorry, I couldn't reach OMNI.")
             return None
         omni_ms = round((time.monotonic() - t0) * 1000)
+        if reply.get("wake") is False:
+            print(f"(not for OMNI, ignored: {reply.get('heard')!r})", flush=True)
+            return None
         print(f"heard: {reply.get('heard')!r}  ({omni_ms} ms)", flush=True)
         record = {"time": time.time(), "heard": reply.get("heard"), "say": reply["say"], "omni_ms": omni_ms,
                   "actions": reply["actions"], "results": []}
@@ -254,6 +298,7 @@ def main():
     ap.add_argument("--text", help="send this text instead of recording (testing)")
     ap.add_argument("--wav", help="send a recorded question instead of using the mic")
     ap.add_argument("--app", default="http://127.0.0.1:8766", help="gaze app (calib/gaze_live.py) base URL; '' to disable")
+    ap.add_argument("--ptt", action="store_true", help="push-to-talk (Enter) instead of always listening for 'OMNI'")
     ap.add_argument("--no-audio-out", action="store_true", help="don't play sound (print only)")
     a = ap.parse_args()
     for k in ("OMNI_API_KEY", "ELEVENLABS_API_KEY"):
@@ -267,24 +312,43 @@ def main():
         audio = read_wav(a.wav)[0] if a.wav else None
         voice.handle(audio=audio, text=a.text, scene=app.frame(), look=summarize([app.look()] if app.look() else []))
         return
-    print("Push-to-talk: press Enter, speak, press Enter again. Ctrl+C quits.")
+    if a.ptt:
+        print("Push-to-talk: press Enter, speak, press Enter again. Ctrl+C quits.")
+        while True:
+            try:
+                input("\n[Enter] to talk > ")
+                print("listening... (Enter to stop)", flush=True)
+                sampler = GazeSampler(app)
+                sampler.start()
+                audio = record_until_enter()
+                look = sampler.finish()
+                print(f"looking at: {look}", flush=True)
+                if len(audio) < 8000:
+                    print("too short, try again")
+                    continue
+                voice.handle(audio=audio, scene=app.frame(), look=look)
+            except (KeyboardInterrupt, EOFError):
+                break
+            except Exception:
+                log.exception("request failed; continuing")
+        return
+    trail = GazeTrail(app)
+    trail.start()
+    print('Listening. Say "OMNI, ..."  (Ctrl+C quits)', flush=True)
     while True:
         try:
-            input("\n[Enter] to talk > ")
-            print("listening... (Enter to stop)", flush=True)
-            sampler = GazeSampler(app)
-            sampler.start()
-            audio = record_until_enter()
-            look = sampler.finish()
-            print(f"looking at: {look}", flush=True)
-            if len(audio) < 8000:
-                print("too short, try again")
-                continue
-            voice.handle(audio=audio, scene=app.frame(), look=look)
-        except (KeyboardInterrupt, EOFError):
+            for audio, t0, t1 in Listener(voice.busy).utterances():
+                look = trail.window(t0, t1)
+                print(f"[{len(audio) / 16000:.1f}s of speech] looking at: {look}", flush=True)
+                try:
+                    voice.handle(audio=audio, scene=app.frame(), look=look)
+                except Exception:
+                    log.exception("request failed; continuing")
+        except KeyboardInterrupt:
             break
         except Exception:
-            log.exception("request failed; continuing")
+            log.exception("microphone stream failed; restarting in 2 s")
+            time.sleep(2)
 
 
 if __name__ == "__main__":
