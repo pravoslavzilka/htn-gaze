@@ -14,6 +14,7 @@
 Any failure (OMNI, ElevenLabs, network) is logged and spoken/printed; the loop keeps running.
 """
 import argparse
+from datetime import datetime, timezone
 import collections
 import difflib
 import base64
@@ -285,8 +286,9 @@ def safe_name(s):
 
 
 class Voice:
-    def __init__(self, player=None, eleven=None):
+    def __init__(self, player=None, eleven=None, sink=None, run="live"):
         self.player, self.eleven = player, eleven or Eleven()
+        self.sink, self.run = sink, run              # sink.add_omni(row): Tiger's omni_interactions
         self.speak_lock = threading.Lock()
         self.working = False                    # true from request start until the answer (and new sound) finished
         self.awake_s = config.env("AWAKE_SECONDS", 10.0, float)
@@ -330,6 +332,16 @@ class Voice:
             if difflib.SequenceMatcher(None, h, sv).ratio() > 0.8 or (len(h) > 12 and h in sv):
                 return True
         return False
+
+    def _store(self, look, heard, say, ms):
+        """One row per real voice request in Tiger. Never raises."""
+        if self.sink is None:
+            return
+        try:
+            obj = f"{look['color']} {look['shape']}" if look and look.get("shape") else (look or {}).get("color")
+            self.sink.add_omni((datetime.now(timezone.utc), self.run, obj, heard, say, float(ms)))
+        except Exception:
+            log.exception("could not queue the interaction for Tiger")
 
     def create_sound(self, action):
         color = safe_name(action.get("color"))
@@ -379,6 +391,7 @@ class Voice:
             return None
         if SLEEP_RE.search(heard) and (self.awake or NAME_RE.search(heard)):   # deterministic, not up to the model
             print(f"heard: {heard!r}  ({omni_ms} ms)", flush=True)
+            self._store(look, heard, "Going to sleep.", omni_ms)
             self.say("Going to sleep.")
             self.sleep()
             return reply
@@ -397,6 +410,7 @@ class Voice:
         for th in jobs:
             th.join()
         LOG.open("a", encoding="utf-8").write(json.dumps(record) + "\n")
+        self._store(look, heard, reply["say"], omni_ms)
         if go_sleep:
             self.sleep()
         else:
@@ -432,6 +446,8 @@ def main():
     ap.add_argument("--stream", default="http://127.0.0.1:8790/stream", help="run.py --stream MJPEG URL (front picture)")
     ap.add_argument("--app", default="", help="use calib/gaze_live.py instead, e.g. http://127.0.0.1:8766")
     ap.add_argument("--ptt", action="store_true", help="push-to-talk (Enter) instead of always listening for 'OMNI'")
+    ap.add_argument("--run", default=config.env("RUN_ID", "live"), help="run id stored with each interaction")
+    ap.add_argument("--no-tiger", action="store_true", help="don't store interactions in Tiger")
     ap.add_argument("--no-audio-out", action="store_true", help="don't play sound (print only)")
     a = ap.parse_args()
     for k in ("OMNI_API_KEY", "ELEVENLABS_API_KEY"):
@@ -440,10 +456,16 @@ def main():
     app = GazeApp(a.app) if a.app else OvnApp(a.status, a.stream)
     if app.look() is None:
         log.info("not looking at any object right now (or the gaze app is not running)")
-    voice = Voice(None if a.no_audio_out else Player(SR))
+    sink = None
+    if config.TIGER_DSN and not a.no_tiger:
+        from tiger import TigerWriter
+        sink = TigerWriter(config.TIGER_DSN).start()
+    voice = Voice(None if a.no_audio_out else Player(SR), sink=sink, run=a.run)
     if a.text or a.wav:
         audio = read_wav(a.wav)[0] if a.wav else None
         voice.handle(audio=audio, text=a.text, scene=app.frame(), look=summarize([app.look()] if app.look() else []))
+        if sink:
+            sink.stop()                              # flush before exiting
         return
     if a.ptt:
         print("Push-to-talk: press Enter, speak, press Enter again. Ctrl+C quits.")
