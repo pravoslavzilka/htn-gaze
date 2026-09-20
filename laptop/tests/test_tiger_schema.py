@@ -50,7 +50,10 @@ class BridgeTests(unittest.TestCase):
         st = {**self.ST, "stage_ms": {"cap": 6.1, "pupil": 0.4, "gaze": 0.3, "scene": 41.7, "fix": 0.5},
               "tracker": {"connected": True, "n": 2, "pupil_ok": 1}}
         p = ovn_bridge.packet(st, 9)
-        self.assertEqual((p["cap_ms"], p["scene_ms"], p["conf"]), (6.1, 41.7, 0.5))
+        self.assertEqual((p["cap_ms"], p["scene_ms"], p["conf"]), (6.1, 41.7, 0.75))    # gaze + one dark-pupil fit
+        st["tracker"] = {"connected": True, "n": 2, "pupil_ok": 0}
+        self.assertEqual(ovn_bridge.packet(st, 11)["conf"], 0.5)                        # iris fallback: tracked, not lost
+        self.assertEqual(ovn_bridge.packet({**st, "gaze_px": None}, 12)["conf"], 0.0)   # no gaze at all: lost
         st["tracker"] = {"connected": False, "n": 0, "pupil_ok": 2}
         p = ovn_bridge.packet(st, 10)
         self.assertEqual((p["conf"], p["ev"]), (0.0, ["camera_error"]))

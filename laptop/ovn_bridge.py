@@ -7,7 +7,7 @@ closed). This sends one packet per new status, exactly like the Pi would, so the
 
 What is measured (run.py with the timing patch, --status-file): the five stage timings (cap = frame read+resize,
 pupil = pupil/iris -> gaze model on this laptop, gaze = calibration mapping, scene = colour detect + track,
-fix = fixation/dwell select), pupil confidence (usable pupil fits / 2 eyes), gaze point, object looked at, blinks.
+fix = fixation/dwell select), confidence (0 = no gaze, 0.5 = iris fallback, 1 = dark-pupil fit on both eyes), gaze point, object looked at, blinks.
 Not measured: the on-board (QNX) pupil-fit time; the board only reports its inference rate. An older run.py without
 the patch sends no timings (stored as NULL, never invented) and a binary conf.
 """
@@ -16,6 +16,7 @@ import json
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sender"))
@@ -26,8 +27,11 @@ def packet(st, f):
     w, h = st.get("frame_w") or 1, st.get("frame_h") or 1
     gp, tgt, closed = st.get("gaze_px"), st.get("target"), bool(st.get("eyes_closed"))
     stage, trk = st.get("stage_ms") or {}, st.get("tracker")
-    if trk is not None:                              # real: how many of the two eyes have a usable pupil fit
-        conf = 0.0 if closed or not trk.get("n") else trk.get("pupil_ok", 0) / 2
+    if trk is not None:
+        # 0 = no usable gaze (eyes closed / no face / no gaze point) = tracking LOST.
+        # 0.5 = gaze from the iris-centre fallback (both eyes found, no dark-pupil fit); up to 1.0 with dark-pupil fits.
+        have = gp is not None and not closed and bool(trk.get("n"))
+        conf = 0.5 + 0.5 * trk.get("pupil_ok", 0) / 2 if have else 0.0
     else:                                            # older app build without a tracker: 1 if it has a gaze point
         conf = 1.0 if (gp is not None and not closed) else 0.0
     ev = (["blink"] if closed else []) + (["camera_error"] if trk is not None and not trk.get("connected", True) else [])
@@ -38,14 +42,25 @@ def packet(st, f):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--run", default="live")
+    ap.add_argument("--run", default="auto", help="run id, or 'auto' = follow the dashboard's current run (New run button)")
+    ap.add_argument("--dashboard", default="http://127.0.0.1:8800")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9999)
     ap.add_argument("--status", default=str(Path(tempfile.gettempdir()) / "ovn_status.json"))
     a = ap.parse_args()
-    tx, path, last_t, f, waiting = GazeSender(a.host, a.port, a.run), Path(a.status), None, 0, False
-    print(f"bridge: {path} -> udp {a.host}:{a.port} as run {a.run!r}", flush=True)
+    run = "live" if a.run == "auto" else a.run
+    tx, path, last_t, f, waiting, last_poll = GazeSender(a.host, a.port, run), Path(a.status), None, 0, False, 0.0
+    print(f"bridge: {path} -> udp {a.host}:{a.port} as run {run!r}" + (" (following the dashboard)" if a.run == "auto" else ""), flush=True)
     while True:
+        if a.run == "auto" and time.time() - last_poll > 1.0:          # a new run starts from frame 0
+            last_poll = time.time()
+            try:
+                new = json.loads(urllib.request.urlopen(a.dashboard + "/api/current_run", timeout=0.5).read())["run"]
+            except Exception:
+                new = run                                                # dashboard down: keep the current run
+            if new != run:
+                run, f, tx = new, 0, GazeSender(a.host, a.port, new)
+                print(f"bridge: new run {run!r}", flush=True)
         try:
             st = json.loads(path.read_text(encoding="utf-8"))
             if time.time() - st["t"] > 3:

@@ -31,6 +31,7 @@ import urllib.request
 from pathlib import Path
 
 import config
+import telemetry
 from eleven import SR, Eleven, ElevenError
 from voice_io import Listener, Player, read_wav, record_until_enter, to_wav
 
@@ -305,7 +306,7 @@ class Voice:
     def busy(self):
         return self.working or (self.player is not None and self.player.playing)
 
-    def say(self, text):
+    def say(self, text, parent=None):
         """Speak with ElevenLabs; if that fails, print it. Never raises."""
         print(f"OMNI: {text}", flush=True)
         if text and not SLEEP_RE.search(text):
@@ -314,9 +315,10 @@ class Voice:
             return
         with self.speak_lock:
             try:
-                for chunk in self.eleven.tts_stream(text):
-                    self.player.feed(chunk)
-                self.player.wait()
+                with telemetry.span(parent, "elevenlabs.tts", "text-to-speech", chars=len(text)):
+                    for chunk in self.eleven.tts_stream(text):
+                        self.player.feed(chunk)
+                    self.player.wait()
             except ElevenError as e:
                 log.error("speech failed: %s", e)
 
@@ -362,11 +364,12 @@ class Voice:
         """One request. audio: int16 mono 16 kHz samples, or text: str. Returns the parsed reply or None."""
         self.working = True
         try:
-            return self._handle(audio, text, scene, look)
+            with telemetry.transaction("omni_request", "omni.request") as tx:
+                return self._handle(audio, text, scene, look, tx)
         finally:
             self.working = False
 
-    def _handle(self, audio, text, scene, look):
+    def _handle(self, audio, text, scene, look, tx=None):
         t0 = time.monotonic()
         user = []
         if scene:
@@ -378,35 +381,44 @@ class Voice:
         user.append({"type": "text", "text": request + "\nLOOK: " + (json.dumps(look) if look else "unavailable")
                      + "\nSTATE: " + ("awake" if self.awake else "asleep")})
         try:
-            reply = parse_reply(omni_text([{"role": "system", "content": SYSTEM_PROMPT},
-                                           {"role": "user", "content": user}]))
+            with telemetry.span(tx, "gen_ai.chat", f"chat {MODEL}", **{
+                    "gen_ai.system": "omni", "gen_ai.request.model": MODEL, "gen_ai.operation.name": "chat",
+                    "has_audio": audio is not None, "has_image": bool(scene)}):
+                raw = omni_text([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}])
+            reply = parse_reply(raw)
         except (OmniError, ValueError) as e:
-            log.error("OMNI failed: %s", e)
-            self.say("Sorry, I couldn't reach OMNI.")
+            log.error("OMNI failed: %s", e)         # also becomes a Sentry issue, linked to this trace
+            self.say("Sorry, I couldn't reach OMNI.", tx)
             return None
         omni_ms = round((time.monotonic() - t0) * 1000)
         heard = str(reply.get("heard") or "")
         if self.is_noise(heard):
             print(f"(noise/echo, ignored: {heard!r})", flush=True)
+            telemetry.drop(tx)                        # not a real request: keep it out of Sentry
             return None
         if SLEEP_RE.search(heard) and (self.awake or NAME_RE.search(heard)):   # deterministic, not up to the model
             print(f"heard: {heard!r}  ({omni_ms} ms)", flush=True)
             self._store(look, heard, "Going to sleep.", omni_ms)
-            self.say("Going to sleep.")
+            self.say("Going to sleep.", tx)
             self.sleep()
             return reply
         if reply.get("wake") is False:
             print(f"(not for OMNI, ignored: {reply.get('heard')!r})", flush=True)
+            telemetry.drop(tx)
             return None
         print(f"heard: {reply.get('heard')!r}  ({omni_ms} ms)", flush=True)
         record = {"time": time.time(), "heard": reply.get("heard"), "say": reply["say"], "omni_ms": omni_ms,
                   "actions": reply["actions"], "results": []}
         jobs = []
         go_sleep = any(a.get("type") == "sleep" for a in reply["actions"])
+        if tx is not None:
+            tx.set_tag("actions", ",".join(a.get("type", "?") for a in reply["actions"]) or "none")
+            tx.set_data("object", (look or {}).get("color"))
+            tx.set_measurement("understand_ms", omni_ms, "millisecond")
         for a in reply["actions"]:
             if a.get("type") == "create_sound" and not go_sleep:
-                jobs.append(self._start_job(a, record))
-        self.say(reply["say"] or ("On it." if jobs else ""))
+                jobs.append(self._start_job(a, record, tx))
+        self.say(reply["say"] or ("On it." if jobs else ""), tx)
         for th in jobs:
             th.join()
         LOG.open("a", encoding="utf-8").write(json.dumps(record) + "\n")
@@ -417,17 +429,18 @@ class Voice:
             self.awake_until = time.monotonic() + self.awake_s   # the 10 s start once OMNI has finished talking
         return reply
 
-    def _start_job(self, action, record):
-        def run():
+    def _start_job(self, action, record, tx=None):
+        def run():          # runs on its own thread, so it attaches to the request's transaction explicitly
             try:
-                color, pcm, ms = self.create_sound(action)
+                with telemetry.span(tx, "elevenlabs.sound_generation", "sound effect", color=str(action.get("color"))):
+                    color, pcm, ms = self.create_sound(action)
             except (ElevenError, ValueError, OSError) as e:
                 log.error("sound generation failed: %s", e)
                 record["results"].append({"error": str(e)[:200]})
-                self.say("Sorry, I couldn't create that sound.")
+                self.say("Sorry, I couldn't create that sound.", tx)
                 return
             record["results"].append({"color": color, "eleven_ms": ms})
-            self.say(f"It was added. That's the sound for {color}.")
+            self.say(f"It was added. That's the sound for {color}.", tx)
             if self.player:
                 self.player.feed(pcm)
                 self.player.wait()
@@ -456,6 +469,7 @@ def main():
     app = GazeApp(a.app) if a.app else OvnApp(a.status, a.stream)
     if app.look() is None:
         log.info("not looking at any object right now (or the gaze app is not running)")
+    telemetry.init("omni_voice")
     sink = None
     if config.TIGER_DSN and not a.no_tiger:
         from tiger import TigerWriter
@@ -466,6 +480,7 @@ def main():
         voice.handle(audio=audio, text=a.text, scene=app.frame(), look=summarize([app.look()] if app.look() else []))
         if sink:
             sink.stop()                              # flush before exiting
+        telemetry.flush()
         return
     if a.ptt:
         print("Push-to-talk: press Enter, speak, press Enter again. Ctrl+C quits.")

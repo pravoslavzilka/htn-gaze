@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gaze dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --border: #2b2a28; --grid: #2f2e2b;
+    --text: #f2f2ee; --text-2: #c3c2b7; --text-3: #8d8c84; --accent: #3987e5;
+    --good: #199e70; --warn: #c98500; --bad: #e66767;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --none: #5b5a55;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #f3f2ee; --surface: #fcfcfb; --border: #dedcd5; --grid: #e6e4dd;
+      --text: #0b0b0b; --text-2: #52514e; --text-3: #7a7973; --accent: #2a78d6;
+      --good: #0f7a55; --warn: #a56b00; --bad: #c23a3a;
+      --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+      --none: #b9b7ae;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
+  h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 650; letter-spacing: .2px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-2); margin: 0 0 10px; font-weight: 650; }
+  main { padding: 16px; display: grid; gap: 16px; grid-template-columns: repeat(12, 1fr); max-width: 1500px; margin: 0 auto; }
+  section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; min-width: 0; }
+  .c12 { grid-column: span 12; } .c7 { grid-column: span 7; } .c5 { grid-column: span 5; } .c6 { grid-column: span 6; } .c4 { grid-column: span 4; } .c8 { grid-column: span 8; }
+  @media (max-width: 1000px) { .c7,.c5,.c6,.c4,.c8 { grid-column: span 12; } }
+  label { color: var(--text-2); font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+  select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  button.danger:hover { border-color: var(--bad); }
+  a.btn { display: inline-block; color: var(--text); text-decoration: none; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; font-size: 13px; }
+  a.btn:hover { border-color: var(--accent); }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; gap: 6px; align-items: center; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--none); }
+  .ok .dot { background: var(--good); } .warn .dot { background: var(--warn); } .bad .dot { background: var(--bad); }
+  #live { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; }
+  #live img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #live .off { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--text-2); text-align: center; padding: 16px; background: rgba(0,0,0,.72); }
+  .tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 12px; }
+  .tile { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .tile b { display: block; font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tile span { color: var(--text-2); font-size: 12px; }
+  .chart { position: relative; height: 260px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-2); font-weight: 600; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  details { margin-top: 8px; color: var(--text-2); } summary { cursor: pointer; font-size: 12px; }
+  .empty { color: var(--text-3); padding: 18px 4px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .banner { display: none; margin: 0 16px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--bad); color: var(--bad); }
+  .issues li { margin: 4px 0; } .issues { padding-left: 18px; margin: 6px 0; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gaze dashboard</h1>
+  <label>Run <select id="runSel"><option value="auto">auto (live)</option></select></label>
+  <button id="newRun" title="Start a new run: the sender switches to a new run id">New run</button>
+  <button id="resetBtn" class="danger" title="Clear live counters; optionally delete the run from Tiger">Reset</button>
+  <span class="spacer"></span>
+  <span class="pill" id="pRx"><span class="dot"></span><span>Pi</span></span>
+  <span class="pill" id="pTiger"><span class="dot"></span><span>Tiger</span></span>
+  <span class="pill" id="pSentry"><span class="dot"></span><span>Sentry</span></span>
+</header>
+<div class="banner" id="banner" role="alert"></div>
+
+<main>
+  <section class="c7">
+    <h2>Live view</h2>
+    <div id="live"><img id="scene" alt="Scene camera with gaze point and fixated object"><div class="off" id="sceneOff">Waiting for the gaze app's video stream…</div></div>
+  </section>
+
+  <section class="c5">
+    <h2>System health <span id="healthRun" style="text-transform:none;letter-spacing:0;color:var(--text-3)"></span></h2>
+    <div class="tiles">
+      <div class="tile"><b id="tFps">–</b><span>frames / s</span></div>
+      <div class="tile"><b id="tAge">–</b><span>since last packet</span></div>
+      <div class="tile"><b id="tLoss">–</b><span>packet loss</span></div>
+      <div class="tile"><b id="tTrack">–</b><span>tracking loss</span></div>
+    </div>
+    <div class="row" id="sentryLinks"></div>
+    <div id="issuesBox" class="empty" style="padding:4px 0">Sentry issues appear here when a read-only token is configured.</div>
+  </section>
+
+  <section class="c6">
+    <h2>Attention — dwell per object, last 60 s</h2>
+    <div class="chart"><canvas id="dwellChart" role="img" aria-label="Seconds spent looking at each object in the last 60 seconds"></canvas></div>
+    <details><summary>Table view</summary><table id="dwellTable"></table></details>
+  </section>
+
+  <section class="c6">
+    <h2>Attention timeline — frames per object, 10 s buckets</h2>
+    <div class="chart"><canvas id="tlChart" role="img" aria-label="Which object was looked at over the last five minutes"></canvas></div>
+  </section>
+
+  <section class="c7">
+    <h2>OMNI history</h2>
+    <div id="omniBox" data-sentry-mask></div>
+  </section>
+
+  <section class="c5">
+    <h2>Compare runs — latency per stage (ms)</h2>
+    <div class="row">
+      <label>A <select id="cmpA"></select></label>
+      <label>B <select id="cmpB"></select></label>
+    </div>
+    <div class="chart" style="height:220px"><canvas id="cmpChart" role="img" aria-label="Average pipeline stage latency for two runs"></canvas></div>
+    <details><summary>Table view</summary><table id="cmpTable"></table></details>
+  </section>
+</main>
+
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="/static/vendor/sentry.bundle.tracing.replay.min.js"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const STAGES = ["cap", "pupil", "gaze", "scene", "fix"];
+let CFG = {}, runs = [], selectedRun = "auto";
+
+/* ------------------------------------------------------------------ helpers */
+async function api(path, opts) {
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 4000);
+  try {
+    const r = await fetch(path, { signal: ctl.signal, ...opts });
+    return await r.json();
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  finally { clearTimeout(to); }
+}
+const fmt = (v, d = 1) => (v == null || Number.isNaN(v) ? "–" : Number(v).toFixed(d));
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hhmmss = (iso) => new Date(iso).toLocaleTimeString([], { hour12: false });
+function setPill(id, cls, text) { const e = $(id); e.className = "pill " + cls; e.lastElementChild.textContent = text; }
+
+/* ------------------------------------------------------------------ colours
+   Objects are named "<colour> <shape>", so a mark takes the hue of its real colour (a blue ball is blue) and the shape is
+   carried by opacity. Hues come from the validated categorical palette; white/gray/black and "no object" are neutral. */
+const HUE = { red: "--s8", orange: "--s2", yellow: "--s4", green: "--s6", cyan: "--s3", blue: "--s1", purple: "--s7", pink: "--s5" };
+const SHAPE_ALPHA = { round: 1, square: 0.72, triangle: 0.5, cylinder: 0.86 };
+function objColor(name) {
+  const [color, shape] = String(name).split(" ");
+  const hex = css(HUE[color] || "--none");
+  if (name === "(no object)") return hex;
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  const a = SHAPE_ALPHA[shape] ?? 1;
+  return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : hex;
+}
+
+/* ------------------------------------------------------------------ charts */
+function baseOpts() {
+  return { responsive: true, maintainAspectRatio: false, animation: false,
+    color: css("--text-2"), borderColor: css("--grid"),
+    plugins: { legend: { labels: { color: css("--text-2"), boxWidth: 10, boxHeight: 10, usePointStyle: false } },
+               tooltip: { backgroundColor: css("--surface"), titleColor: css("--text"), bodyColor: css("--text-2"), borderColor: css("--border"), borderWidth: 1 } } };
+}
+const axis = (title) => ({ grid: { color: css("--grid") }, ticks: { color: css("--text-2") }, border: { display: false }, title: title ? { display: true, text: title, color: css("--text-3") } : undefined });
+let dwellChart, tlChart, cmpChart;
+function makeCharts() {
+  dwellChart = new Chart($("dwellChart"), { type: "bar", data: { labels: [], datasets: [{ label: "Seconds", data: [], backgroundColor: [], borderRadius: 4, borderSkipped: "start" }] },
+    options: { ...baseOpts(), indexAxis: "y", plugins: { ...baseOpts().plugins, legend: { display: false } },
+      scales: { x: axis("seconds"), y: { grid: { display: false }, ticks: { color: css("--text-2") }, border: { display: false } } } } });
+  tlChart = new Chart($("tlChart"), { type: "bar", data: { labels: [], datasets: [] },
+    options: { ...baseOpts(), interaction: { mode: "index", intersect: false }, scales: { x: { ...axis(), stacked: true, grid: { display: false } }, y: { ...axis("frames"), stacked: true } } } });
+  cmpChart = new Chart($("cmpChart"), { type: "bar", data: { labels: STAGES, datasets: [] },
+    options: { ...baseOpts(), scales: { x: { ...axis(), grid: { display: false } }, y: axis("ms") } } });
+}
+function retheme() {
+  for (const c of [dwellChart, tlChart, cmpChart]) {
+    const o = baseOpts(); c.options.plugins.legend.labels = o.plugins.legend.labels; c.options.plugins.tooltip = { ...c.options.plugins.tooltip, ...o.plugins.tooltip };
+    for (const s of Object.values(c.options.scales)) { s.ticks = { ...(s.ticks || {}), color: css("--text-2") }; if (s.grid && s.grid.display !== false) s.grid.color = css("--grid"); }
+  }
+  tick(true);
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", retheme);
+
+/* ------------------------------------------------------------------ panels */
+async function updateAttention() {
+  const a = await api(`/api/attention?run=${encodeURIComponent(selectedRun)}&seconds=60`);
+  if (!a.ok) return a;
+  const dw = a.dwell || [];
+  dwellChart.data.labels = dw.map((d) => d.obj);
+  dwellChart.data.datasets[0].data = dw.map((d) => d.seconds);
+  dwellChart.data.datasets[0].backgroundColor = dw.map((d) => objColor(d.obj));
+  dwellChart.update("none");
+  $("dwellTable").innerHTML = "<tr><th>Object</th><th class=num>Seconds</th><th class=num>Frames</th></tr>" +
+    dw.map((d) => `<tr><td>${esc(d.obj)}</td><td class=num>${d.seconds}</td><td class=num>${d.frames}</td></tr>`).join("");
+  const tl = a.timeline || [], objs = [...new Set(tl.flatMap((b) => Object.keys(b.counts)))];
+  tlChart.data.labels = tl.map((b) => hhmmss(b.bucket));
+  tlChart.data.datasets = objs.map((o) => ({ label: o, data: tl.map((b) => b.counts[o] || 0), backgroundColor: objColor(o), borderColor: css("--surface"), borderWidth: 2, borderRadius: 3 }));
+  tlChart.update("none");
+  return a;
+}
+async function updateOmni() {
+  const o = await api("/api/omni?limit=8");
+  if (!o.ok) return o;
+  $("omniBox").innerHTML = o.items.length
+    ? "<table><tr><th>Time</th><th>Looking at</th><th>Asked</th><th>Answer</th><th class=num>Latency</th></tr>" +
+      o.items.map((i) => `<tr><td>${hhmmss(i.time)}</td><td>${esc(i.object || "–")}</td><td>${esc(i.transcript)}</td><td>${esc(i.answer)}</td><td class=num>${fmt(i.latency_ms, 0)} ms</td></tr>`).join("") + "</table>"
+    : '<div class="empty">No OMNI requests yet. Say “OMNI …”.</div>';
+  return o;
+}
+async function updateHealth() {
+  const h = await api(`/api/health?run=${encodeURIComponent(selectedRun)}`);
+  if (h.ok === false && h.error) { setPill("pRx", "bad", "dashboard API down"); return; }
+  const l = h.live;
+  $("healthRun").textContent = h.run ? "· " + h.run : "";
+  $("tFps").textContent = l ? fmt(l.fps) : "–";
+  $("tAge").textContent = l ? fmt(l.age_s) + " s" : "–";
+  $("tLoss").textContent = l ? fmt(l.loss_rate * 100) + " %" : "–";
+  $("tTrack").textContent = l ? fmt(l.tracking_lost_rate * 100) + " %" : "–";
+  setPill("pRx", h.receiving ? "ok" : (l ? "warn" : ""), h.receiving ? "Pi connected" : (l ? "Pi silent" : "waiting for Pi"));
+  const t = h.tiger;
+  setPill("pTiger", !t.enabled ? "" : t.reachable === false ? "bad" : t.buffered > 500 ? "warn" : "ok",
+    !t.enabled ? "Tiger off" : t.reachable === false ? "Tiger down (buffering " + t.buffered + ")" : "Tiger · " + t.inserted + " rows");
+  setPill("pSentry", h.sentry ? "ok" : "", h.sentry ? "Sentry on" : "Sentry off");
+}
+async function updateRuns() {
+  const r = await api("/api/runs");
+  if (!r.ok) return;
+  runs = r.runs;
+  const opts = ['<option value="auto">auto (live)</option>'].concat(runs.map((x) => `<option value="${esc(x.run)}">${esc(x.run)} · ${x.frames}</option>`));
+  if (opts.join() !== updateRuns.last) { updateRuns.last = opts.join();
+    for (const id of ["runSel", "cmpA", "cmpB"]) { const s = $(id), keep = s.value; s.innerHTML = id === "runSel" ? opts.join("") : opts.slice(1).join(""); if ([...s.options].some((o) => o.value === keep)) s.value = keep; }
+    if (!$("cmpA").dataset.set && runs.length) { $("cmpA").value = runs[Math.min(1, runs.length - 1)].run; $("cmpB").value = runs[0].run; $("cmpA").dataset.set = 1; }
+  }
+}
+async function updateCompare() {
+  const a = $("cmpA").value, b = $("cmpB").value;
+  if (!a || !b) return;
+  const c = await api(`/api/compare?runs=${encodeURIComponent(a)},${encodeURIComponent(b)}`);
+  if (!c.ok) return;
+  const names = [...new Set([a, b])];
+  cmpChart.data.datasets = names.map((n, i) => ({ label: n + (c.runs[n] && !c.runs[n].timed_frames ? " (no timings)" : ""), backgroundColor: css("--s" + (i + 1)), borderColor: css("--surface"), borderWidth: 2, borderRadius: 4,
+    data: STAGES.map((s) => (c.runs[n] ? c.runs[n].stages[s].avg : null)) }));
+  cmpChart.update("none");
+  $("cmpTable").innerHTML = "<tr><th>Stage</th>" + names.map((n) => `<th class=num>${esc(n)} avg</th><th class=num>p95</th>`).join("") + "</tr>" +
+    STAGES.map((s) => `<tr><td>${s}</td>` + names.map((n) => { const v = c.runs[n]?.stages[s]; return `<td class=num>${fmt(v?.avg, 2)}</td><td class=num>${fmt(v?.p95, 2)}</td>`; }).join("") + "</tr>").join("");
+}
+async function updateIssues() {
+  if (!CFG.issues_api) return;
+  const r = await api("/api/sentry/issues");
+  $("issuesBox").innerHTML = r.ok && r.issues.length
+    ? '<ul class="issues">' + r.issues.map((i) => `<li><a href="${esc(i.link)}" target="_blank" rel="noopener" style="color:var(--text)">${esc(i.title)}</a> <span style="color:var(--text-3)">×${esc(i.count)}</span></li>`).join("") + "</ul>"
+    : `<div class="empty" style="padding:4px 0">${r.ok ? "No issues in the last hour." : "Sentry issues unavailable: " + esc(r.error || "")}</div>`;
+}
+
+/* ------------------------------------------------------------------ loop */
+let busy = false, n = 0;
+async function tick(force) {
+  if (busy && !force) return; busy = true;
+  try {
+    const [a] = await Promise.all([updateAttention(), updateOmni(), updateHealth()]);
+    const bad = a && a.ok === false;
+    $("banner").style.display = bad ? "block" : "none";
+    if (bad) $("banner").textContent = "Tiger is unreachable (" + a.error + "). Live health still works; charts resume automatically.";
+    if (n % 5 === 0) { await updateRuns(); await updateCompare(); }
+    if (n % 15 === 0) updateIssues();
+    n++;
+  } catch (e) { Sentry.captureException(e); } finally { busy = false; }
+}
+setInterval(() => { if (!document.hidden) tick(); }, 1000);
+
+/* live picture: retry when the gaze app is down / restarts */
+function startScene() {
+  const img = $("scene"), off = $("sceneOff");
+  const load = () => { img.src = CFG.scene_url + (CFG.scene_url.includes("?") ? "&" : "?") + "t=" + Date.now(); };
+  img.onload = () => { off.style.display = "none"; };
+  img.onerror = () => { off.style.display = "flex"; setTimeout(load, 3000); };
+  load();
+}
+
+/* ------------------------------------------------------------------ controls */
+$("runSel").onchange = (e) => { selectedRun = e.target.value; tick(true); };
+$("cmpA").onchange = $("cmpB").onchange = updateCompare;
+$("newRun").onclick = async () => {
+  const name = prompt("Name for the new run (blank = automatic):", "");
+  if (name === null) return;
+  const r = await api("/api/runs/new", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  if (r.run) { selectedRun = "auto"; $("runSel").value = "auto"; }
+};
+$("resetBtn").onclick = async () => {
+  const del = confirm("Reset live counters.\n\nOK = also DELETE the selected run's data from Tiger.\nCancel = only reset the counters.");
+  const run = selectedRun === "auto" ? (await api("/api/runs")).live : selectedRun;
+  await api("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run, delete: del }) });
+  updateRuns.last = ""; tick(true);
+};
+
+/* ------------------------------------------------------------------ start */
+(async function init() {
+  CFG = await api("/api/config");
+  if (CFG.sentry_dsn && window.Sentry) {
+    Sentry.init({ dsn: CFG.sentry_dsn, environment: CFG.environment,
+      integrations: [Sentry.browserTracingIntegration(), Sentry.replayIntegration({ maskAllText: false, blockAllMedia: false })],
+      tracesSampleRate: 1.0, replaysSessionSampleRate: 1.0, replaysOnErrorSampleRate: 1.0,
+      tracePropagationTargets: [location.origin] });
+    Sentry.setTag("app", "gaze-dashboard");
+  } else { window.Sentry = window.Sentry || { captureException() {} }; }
+  const links = { issues: "Issues", traces: "Trace explorer", logs: "Logs", replays: "Session replays", dashboards: "Sentry dashboard" };
+  $("sentryLinks").innerHTML = Object.entries(links).map(([k, t]) => `<a class="btn" target="_blank" rel="noopener" href="${esc(CFG.links[k])}">${t}</a>`).join("");
+  makeCharts(); startScene(); tick(true);
+})();
+window.addEventListener("error", (e) => Sentry.captureException(e.error || e.message));
+</script>
+</body>
+</html>
