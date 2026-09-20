@@ -49,10 +49,17 @@ You can ask ElevenLabs to generate a sound for a colour. Write a short sound-eff
 colour (red = warm, bold, brassy; blue = calm, watery, soft chime; yellow = bright, sparkling; green = organic,
 wooden marimba; ...).
 
-WAKE WORD: the microphone is always on and hears everything, including other people and TV. Only act when the
-speech is addressed to you by name: it contains "OMNI" (also accept how it may be transcribed: "Omni", "Omnie",
-"Ohm knee", "Hey Omni", "Okay Omni"). If it is not addressed to OMNI, reply {"heard": "<text>", "wake": false}
-and nothing else.
+WAKE WORD: the microphone is always on and hears everything, including other people and TV. Each request ends
+with STATE: asleep or STATE: awake.
+- asleep: only act when the speech is addressed to you by name: it contains "OMNI" (also accept how it may be
+  transcribed: "Omni", "Omnie", "Ohm knee", "Hey Omni", "Okay Omni").
+- awake: the wearer is mid-conversation with you, so follow-ups need no name ("make it longer", "and blue?").
+  Act on speech unless it is clearly meant for another person.
+Reply {"heard": "<text>", "wake": false} and nothing else ONLY when (asleep and the name is missing) or (awake and
+it is clearly meant for someone else). Never use wake false for any other reason: if they addressed you, answer,
+even a general question, briefly (max 2 sentences).
+If the wearer tells you to stop, go to sleep, be quiet or that they are done, reply with the normal JSON
+object below, with "say": "Going to sleep." and "actions": [{"type": "sleep"}] (works in either state).
 
 Reply with ONLY one JSON object, no prose, no code fences:
 {"heard": "<what they said>", "wake": true, "say": "<spoken reply>",
@@ -62,6 +69,10 @@ Reply with ONLY one JSON object, no prose, no code fences:
 When you use create_sound, "say" MUST be exactly "On it." (the wearer hears "It was added." separately when done).
 For anything else (a question about the colour or what they see), use no actions and put a short answer
 (max 2 sentences) in "say". If you can't tell what they mean, ask one short question in "say"."""
+
+
+SLEEP_RE = re.compile(r"go(ing)? to sleep|good ?night|that'?s all|stop listening|be quiet|shut ?down|never ?mind", re.I)
+NAME_RE = re.compile(r"\bomni|omnie|ohm ?knee|\bamni", re.I)
 
 
 class OmniError(RuntimeError):
@@ -102,6 +113,10 @@ def parse_reply(text):
     if not m:
         raise OmniError(f"no JSON in reply: {text[:200]!r}")
     r = json.loads(m.group(0))
+    if "type" in r and "actions" not in r:            # the model sometimes returns just the action
+        r = {"heard": "", "wake": True, "actions": [r]}
+        if r["actions"][0].get("type") == "sleep":
+            r["say"] = "Going to sleep."
     r["say"] = str(r.get("say") or "")
     r["actions"] = [a for a in r.get("actions") or [] if isinstance(a, dict)]
     return r
@@ -199,6 +214,15 @@ class Voice:
         self.player, self.eleven = player, eleven or Eleven()
         self.speak_lock = threading.Lock()
         self.working = False                    # true from request start until the answer (and new sound) finished
+        self.awake_s = config.env("AWAKE_SECONDS", 10.0, float)
+        self.awake_until = 0.0                  # after a wake, follow-ups need no "OMNI" until this time
+
+    @property
+    def awake(self):
+        return time.monotonic() < self.awake_until
+
+    def sleep(self):
+        self.awake_until = 0.0
 
     def busy(self):
         return self.working or (self.player is not None and self.player.playing)
@@ -248,7 +272,8 @@ class Voice:
             user.append({"type": "input_audio", "input_audio": {"data": "data:;base64," + base64.b64encode(
                 to_wav(audio, 16000)).decode(), "format": "wav"}})
         request = text or "The wearer's request is in the audio."
-        user.append({"type": "text", "text": request + "\nLOOK: " + (json.dumps(look) if look else "unavailable")})
+        user.append({"type": "text", "text": request + "\nLOOK: " + (json.dumps(look) if look else "unavailable")
+                     + "\nSTATE: " + ("awake" if self.awake else "asleep")})
         try:
             reply = parse_reply(omni_text([{"role": "system", "content": SYSTEM_PROMPT},
                                            {"role": "user", "content": user}]))
@@ -257,6 +282,12 @@ class Voice:
             self.say("Sorry, I couldn't reach OMNI.")
             return None
         omni_ms = round((time.monotonic() - t0) * 1000)
+        heard = str(reply.get("heard") or "")
+        if SLEEP_RE.search(heard) and (self.awake or NAME_RE.search(heard)):   # deterministic, not up to the model
+            print(f"heard: {heard!r}  ({omni_ms} ms)", flush=True)
+            self.say("Going to sleep.")
+            self.sleep()
+            return reply
         if reply.get("wake") is False:
             print(f"(not for OMNI, ignored: {reply.get('heard')!r})", flush=True)
             return None
@@ -264,13 +295,18 @@ class Voice:
         record = {"time": time.time(), "heard": reply.get("heard"), "say": reply["say"], "omni_ms": omni_ms,
                   "actions": reply["actions"], "results": []}
         jobs = []
+        go_sleep = any(a.get("type") == "sleep" for a in reply["actions"])
         for a in reply["actions"]:
-            if a.get("type") == "create_sound":
+            if a.get("type") == "create_sound" and not go_sleep:
                 jobs.append(self._start_job(a, record))
         self.say(reply["say"] or ("On it." if jobs else ""))
         for th in jobs:
             th.join()
         LOG.open("a", encoding="utf-8").write(json.dumps(record) + "\n")
+        if go_sleep:
+            self.sleep()
+        else:
+            self.awake_until = time.monotonic() + self.awake_s   # the 10 s start once OMNI has finished talking
         return reply
 
     def _start_job(self, action, record):
@@ -334,7 +370,17 @@ def main():
         return
     trail = GazeTrail(app)
     trail.start()
-    print('Listening. Say "OMNI, ..."  (Ctrl+C quits)', flush=True)
+
+    def announce_sleep():
+        was = False
+        while True:
+            now = voice.awake and not voice.busy()
+            if was and not voice.awake:
+                print('(asleep: say "OMNI" to wake me)', flush=True)
+            was = voice.awake
+            time.sleep(0.3)
+    threading.Thread(target=announce_sleep, daemon=True).start()
+    print(f'Listening. Say "OMNI, ..."  ({voice.awake_s:.0f} s after my last answer I go back to sleep; Ctrl+C quits)', flush=True)
     while True:
         try:
             for audio, t0, t1 in Listener(voice.busy).utterances():
