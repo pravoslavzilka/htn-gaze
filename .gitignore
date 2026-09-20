@@ -14,3 +14,8 @@ experiments/focus_out/
 *.log
 calib/*.bak*
 calib/gaze_live_v1_old.py
+
+# secrets
+.env
+*.env
+!.env.example
