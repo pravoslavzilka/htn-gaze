@@ -20,11 +20,13 @@ from PIL import Image
 
 from features import EyeTracker, fetch_pack, feature_vector
 from fitlib import design, load_model
+from gaze_color import color_at
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _lock = threading.Lock()
 _gaze = {"p": None, "t": 0.0}          # smoothed gaze point in scene pixels
 _jpeg = {"b": b"", "id": 0}
+_look = {"valid": False}               # gaze point (0..1) and the colour under it, served at /gaze
 
 
 def get(url, timeout=3):
@@ -78,12 +80,17 @@ def scene_loop(m, scene_url):
         age = time.time() - t
         if p is not None and age < 1.5:
             x, y = int(np.clip(p[0], 0, w - 1)), int(np.clip(p[1], 0, h - 1))
+            name, rgb = color_at(img, x, y)          # read the colour BEFORE the overlay is drawn on it
+            with _lock:
+                _look.update(valid=True, x=x / w, y=y / h, w=w, h=h, color=name, rgb=rgb, stale=age > 0.4, t=time.time())
             stale = age > 0.4          # eyes briefly lost (blink / glance): show the last estimate in yellow
             col = (0, 220, 255) if stale else (0, 255, 0)
             cv2.circle(img, (x, y), int(m["err"]), (255, 255, 255), 1, cv2.LINE_AA)
             cv2.circle(img, (x, y), 14, col, 3, cv2.LINE_AA)
             cv2.circle(img, (x, y), 3, (0, 0, 255), -1, cv2.LINE_AA)
         else:
+            with _lock:
+                _look["valid"] = False
             cv2.putText(img, "no eyes detected", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if ok:
@@ -121,6 +128,14 @@ class H(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(b + b"\r\n")
             except Exception:  # noqa: BLE001
                 return
+        elif self.path.startswith("/gaze"):        # what the user is looking at right now (used by laptop/omni_voice.py)
+            with _lock:
+                b = json.dumps({**_look, "age": round(time.time() - _look.get("t", 0), 2)}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
         elif self.path.startswith("/frame"):
             with _lock:
                 b = _jpeg["b"]

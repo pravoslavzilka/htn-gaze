@@ -2,3 +2,6 @@ psycopg[binary]>=3.2
 fastapi
 uvicorn
 sentry-sdk>=2.35
+opencv-python
+numpy
+sounddevice

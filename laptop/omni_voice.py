@@ -1,12 +1,12 @@
 """Voice loop: you talk, OMNI understands, ElevenLabs makes the sound.
 
-    "OMNI, tell ElevenLabs to create a sound for this color"
+    "OMNI, look at this color and create a sound for it"
       -> OMNI hears the audio (+ the scene picture, if a camera is given) and answers JSON
       -> speaks "On it."  while ElevenLabs generates the sound in the background
       -> saves sounds/<color>.wav, registers it in sounds/index.json, speaks "It was added.", plays it
 
   python omni_voice.py                        # push-to-talk on the default mic: Enter starts, Enter stops
-  python omni_voice.py --scene http://169.254.96.94:8081/api/frame.jpg --gaze 0.62,0.40
+  python omni_voice.py --app http://127.0.0.1:8766       # gaze app (calib/gaze_live.py) that reads the colour
   python omni_voice.py --text "create a sound for the color red"     # no mic (testing)
   python omni_voice.py --wav question.wav                            # a recorded question
 
@@ -38,21 +38,24 @@ BASE_URL = config.env("OMNI_BASE_URL", "https://yibuapi.com/v1")
 MODEL = config.env("OMNI_MODEL", "qwen3.5-omni-flash")
 
 SYSTEM_PROMPT = """You are OMNI, the voice assistant of a head-mounted eye-tracking wearable. The wearer talks
-to you; they may address you as "OMNI". You get their spoken request (audio or text), optionally the scene
-camera picture with a white circle where they are looking (GAZE), and JSON with what is known.
+to you; they may address you as "OMNI". You get their spoken request (audio or text) and LOOK: JSON from the
+gaze tracker with what they were looking at while speaking: the colour name and RGB measured under their gaze
+point, and where (x,y in 0..1). The scene camera picture may be attached, with a green dot at the gaze point.
+"this", "this color", "that" mean the LOOK colour. Trust the measured LOOK colour over your own reading of the
+picture; if LOOK is missing, use a colour they named or the picture.
 
-You can ask ElevenLabs to generate a sound for a colour. When the wearer asks for a sound for "this color",
-"that", or names a colour, work out WHICH colour: the colour of the object under the white circle, or the colour
-they named. Then write a short sound-effect description that suits that colour (red = warm, bold, brassy;
-blue = calm, watery, soft chime; yellow = bright, sparkling; green = organic, wooden marimba; ...).
+You can ask ElevenLabs to generate a sound for a colour. Write a short sound-effect description that suits the
+colour (red = warm, bold, brassy; blue = calm, watery, soft chime; yellow = bright, sparkling; green = organic,
+wooden marimba; ...).
 
 Reply with ONLY one JSON object, no prose, no code fences:
-{"heard": "<what they said>", "say": "On it.",
+{"heard": "<what they said>", "say": "<spoken reply>",
  "actions": [{"type": "create_sound", "color": "<one lowercase colour word>",
               "prompt": "<sound effect description, max 20 words, one short musical note or sound>",
               "seconds": <1-3>}]}
 When you use create_sound, "say" MUST be exactly "On it." (the wearer hears "It was added." separately when done).
-If you can't tell the colour, or the request is something else, use no actions and ask one short question in "say"."""
+For anything else (a question about the colour or what they see), use no actions and put a short answer
+(max 2 sentences) in "say". If you can't tell what they mean, ask one short question in "say"."""
 
 
 class OmniError(RuntimeError):
@@ -98,24 +101,63 @@ def parse_reply(text):
     return r
 
 
-def fetch_scene(url, gaze):
-    """Scene JPEG from the camera URL, with the gaze point drawn on it. None if unavailable."""
-    if not url:
+class GazeApp:
+    """Client for calib/gaze_live.py: /gaze (point + colour under it) and /frame (annotated scene picture)."""
+
+    def __init__(self, url):
+        self.url = url.rstrip("/") if url else None
+
+    def _get(self, path, timeout=2):
+        return urllib.request.urlopen(self.url + path, timeout=timeout).read()
+
+    def look(self):
+        """Current gaze reading, or None if the app is down or the eyes are not detected."""
+        if not self.url:
+            return None
+        try:
+            d = json.loads(self._get("/gaze"))
+        except Exception as e:
+            log.warning("gaze app unavailable (%s)", e)
+            return None
+        return d if d.get("valid") and d.get("age", 9) < 1.5 else None
+
+    def frame(self):
+        try:
+            return self._get("/frame") if self.url else None
+        except Exception as e:
+            log.warning("scene frame unavailable (%s)", e)
+            return None
+
+
+class GazeSampler(threading.Thread):
+    """Polls /gaze while the wearer speaks; the colour they looked at most is what "this color" means."""
+
+    def __init__(self, app, every=0.2):
+        super().__init__(daemon=True)
+        self.app, self.every, self.samples, self._halt = app, every, [], threading.Event()
+
+    def run(self):
+        while not self._halt.is_set():
+            d = self.app.look()
+            if d:
+                self.samples.append(d)
+            self._halt.wait(self.every)
+
+    def finish(self):
+        self._halt.set()
+        self.join(3)
+        return summarize(self.samples)
+
+
+def summarize(samples):
+    """Most-looked-at colour over the samples -> {"color", "rgb", "x", "y", "share"} or None."""
+    if not samples:
         return None
-    try:
-        jpg = urllib.request.urlopen(url, timeout=3).read()
-        if gaze:
-            import cv2
-            import numpy as np
-            img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
-            h, w = img.shape[:2]
-            c = (int(gaze[0] * w), int(gaze[1] * h))
-            cv2.circle(img, c, 18, (255, 255, 255), 3)
-            jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes()
-        return jpg
-    except Exception as e:
-        log.warning("scene camera unavailable (%s); continuing without a picture", e)
-        return None
+    import collections
+    top, n = collections.Counter(s["color"] for s in samples).most_common(1)[0]
+    last = [s for s in samples if s["color"] == top][-1]
+    return {"color": top, "rgb": last["rgb"], "x": round(last["x"], 3), "y": round(last["y"], 3),
+            "share": round(n / len(samples), 2)}
 
 
 def safe_name(s):
@@ -155,7 +197,7 @@ class Voice:
         idx_path.write_text(json.dumps(idx, indent=1))
         return color, pcm, round((time.monotonic() - t0) * 1000)
 
-    def handle(self, audio=None, text=None, scene=None):
+    def handle(self, audio=None, text=None, scene=None, look=None):
         """One request. audio: int16 mono 16 kHz samples, or text: str. Returns the parsed reply or None."""
         t0 = time.monotonic()
         user = []
@@ -164,7 +206,8 @@ class Voice:
         if audio is not None:
             user.append({"type": "input_audio", "input_audio": {"data": "data:;base64," + base64.b64encode(
                 to_wav(audio, 16000)).decode(), "format": "wav"}})
-        user.append({"type": "text", "text": text or "The wearer's request is in the audio."})
+        request = text or "The wearer's request is in the audio."
+        user.append({"type": "text", "text": request + "\nLOOK: " + (json.dumps(look) if look else "unavailable")})
         try:
             reply = parse_reply(omni_text([{"role": "system", "content": SYSTEM_PROMPT},
                                            {"role": "user", "content": user}]))
@@ -210,29 +253,34 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--text", help="send this text instead of recording (testing)")
     ap.add_argument("--wav", help="send a recorded question instead of using the mic")
-    ap.add_argument("--scene", help="scene camera JPEG URL, e.g. http://<board>:8081/api/frame.jpg")
-    ap.add_argument("--gaze", help="gaze point as x,y in 0..1 to draw on the scene picture")
+    ap.add_argument("--app", default="http://127.0.0.1:8766", help="gaze app (calib/gaze_live.py) base URL; '' to disable")
     ap.add_argument("--no-audio-out", action="store_true", help="don't play sound (print only)")
     a = ap.parse_args()
     for k in ("OMNI_API_KEY", "ELEVENLABS_API_KEY"):
         if not config.env(k):
             sys.exit(f"{k} missing: put it in laptop/.env")
-    gaze = tuple(float(v) for v in a.gaze.split(",")) if a.gaze else None
+    app = GazeApp(a.app)
+    if a.app and app.look() is None:
+        log.warning("gaze app at %s not reporting a gaze yet; say a colour name if it stays that way", a.app)
     voice = Voice(None if a.no_audio_out else Player(SR))
     if a.text or a.wav:
         audio = read_wav(a.wav)[0] if a.wav else None
-        voice.handle(audio=audio, text=a.text, scene=fetch_scene(a.scene, gaze))
+        voice.handle(audio=audio, text=a.text, scene=app.frame(), look=summarize([app.look()] if app.look() else []))
         return
     print("Push-to-talk: press Enter, speak, press Enter again. Ctrl+C quits.")
     while True:
         try:
             input("\n[Enter] to talk > ")
             print("listening... (Enter to stop)", flush=True)
+            sampler = GazeSampler(app)
+            sampler.start()
             audio = record_until_enter()
+            look = sampler.finish()
+            print(f"looking at: {look}", flush=True)
             if len(audio) < 8000:
                 print("too short, try again")
                 continue
-            voice.handle(audio=audio, scene=fetch_scene(a.scene, gaze))
+            voice.handle(audio=audio, scene=app.frame(), look=look)
         except (KeyboardInterrupt, EOFError):
             break
         except Exception:
