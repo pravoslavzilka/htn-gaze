@@ -1,0 +1,18 @@
+{
+  "eye_distance_mm": 100.18,
+  "scene_depth_mm": 100.0,
+  "kappa_deg": -5.24,
+  "zero_yaw_deg": -0.86,
+  "zero_pitch_deg": -10.405,
+  "fixed_center": {
+    "left": [
+      0.31915,
+      0.2278
+    ],
+    "right": [
+      0.7501,
+      0.1893
+    ]
+  },
+  "source": "fitted on 18 calibration squares, run_20260920_093907 of the eye-tracking repo (eval_geom.py)"
+}

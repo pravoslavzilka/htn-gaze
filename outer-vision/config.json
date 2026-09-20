@@ -1,0 +1,201 @@
+{
+  "process_width": 640,
+  "colors": {
+    "red": {
+      "hsv": [
+        0,
+        200,
+        170
+      ],
+      "bgr": [
+        40,
+        40,
+        230
+      ]
+    },
+    "yellow": {
+      "hsv": [
+        27,
+        200,
+        210
+      ],
+      "bgr": [
+        40,
+        220,
+        240
+      ]
+    },
+    "green": {
+      "hsv": [
+        62,
+        170,
+        150
+      ],
+      "bgr": [
+        60,
+        200,
+        60
+      ]
+    },
+    "blue": {
+      "hsv": [
+        110,
+        200,
+        170
+      ],
+      "bgr": [
+        230,
+        120,
+        40
+      ]
+    },
+    "purple": {
+      "hsv": [
+        135,
+        150,
+        140
+      ],
+      "bgr": [
+        180,
+        60,
+        150
+      ]
+    }
+  },
+  "color_match": {
+    "s_min": 90,
+    "v_min": 60,
+    "hue_tol": 8,
+    "sat_tol": 90,
+    "max_dist": 1.7
+  },
+  "shape_net": {
+    "enabled": true,
+    "model_dir": "models/shape",
+    "reject_min_prob": 0.6
+  },
+  "detector": {
+    "blur": 5,
+    "morph": 5,
+    "min_area_frac": 0.0015,
+    "max_area_frac": 0.25,
+    "poly_eps": 0.02,
+    "round_min_circlefill": 0.86,
+    "square_max_aspect": 1.5,
+    "square_min_rectfill": 0.9,
+    "square_max_vertices": 6,
+    "square_min_solidity": 0.9,
+    "cylinder_min_aspect": 1.25,
+    "triangle_max_circlefill": 0.62,
+    "triangle_max_rectfill": 0.81,
+    "border_margin": 3
+  },
+  "tracker": {
+    "max_jump_frac": 0.15,
+    "max_missing_s": 0.5,
+    "confirm_hits": 3,
+    "smooth": 0.5,
+    "shape_votes": 9
+  },
+  "selector": {
+    "dwell_s": 0.5,
+    "grace_s": 0.15,
+    "select_radius_frac": 0.03,
+    "best_guess_radius_frac": 0.12,
+    "switch_margin_frac": 0.02,
+    "gaze_max_age_s": 0.2
+  },
+  "depth": {
+    "ref_distance_cm": null,
+    "ref_size": {},
+    "near_cm": 40.0,
+    "far_cm": 100.0,
+    "min_volume": 0.2
+  },
+  "music": {
+    "notes": {
+      "red": "C4",
+      "yellow": "D4",
+      "green": "E4",
+      "blue": "G4",
+      "purple": "A4"
+    },
+    "instruments": {
+      "round": "marimba",
+      "square": "piano",
+      "cylinder": "flute",
+      "triangle": "bell"
+    },
+    "available_instruments": [
+      "piano",
+      "marimba",
+      "flute",
+      "strings",
+      "bell",
+      "drum",
+      "synth"
+    ]
+  },
+  "omni": {
+    "base_url": "https://yibuapi.com/v1",
+    "model": "qwen3.5-omni-flash",
+    "voice": "Serena",
+    "speak_with": "eleven",
+    "timeout_s": 10.0,
+    "retries": 1,
+    "history_turns": 6
+  },
+  "blink": {
+    "short_max_s": 0.4,
+    "long_min_s": 0.6,
+    "long_max_s": 2.0,
+    "double_gap_s": 0.7,
+    "side_frac": 0.7,
+    "max_sample_gap_s": 0.25
+  },
+  "menu": {
+    "timeout_s": 8.0
+  },
+  "eleven": {
+    "voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "tts_model": "eleven_flash_v2_5"
+  },
+  "qnx": {
+    "host": "192.168.2.2",
+    "eye_port": 8080,
+    "scene_port": 8081,
+    "poll_hz": 30.0,
+    "timeout_s": 0.5,
+    "rig": {
+      "eye_distance_mm": 80.0,
+      "baseline_mm": 25.0,
+      "eyeball_radius_mm": 12.0,
+      "hfov_deg": 66.0,
+      "scene_depth_mm": 1500.0,
+      "kappa_deg": 5.0,
+      "flip_x": false,
+      "flip_y": false,
+      "scene_w": 960,
+      "scene_h": 540,
+      "zero_yaw_deg": 0.0,
+      "zero_pitch_deg": 0.0
+    },
+    "lid": {
+      "closed_below": 0.15,
+      "open_above": 0.2,
+      "min_open_for_gaze": 0.08
+    },
+    "smooth": {
+      "median": 5,
+      "ema": 0.45
+    }
+  },
+  "gaze_udp_port": 5005,
+  "events": {
+    "host": "127.0.0.1",
+    "port": 5006
+  },
+  "calib_marker": {
+    "dictionary": "DICT_4X4_50"
+  }
+}
