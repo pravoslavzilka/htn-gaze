@@ -79,8 +79,54 @@ EOF
 ```
 Keys: `1`/`2`/`3` long blink left/right/both · `x` double blink · `q` quit · `m` colour view · `f` features
 · `r` record · `c` depth ref · `p` pause · `s` snapshot.
-Flags: `--offline` (never call OMNI; built-in defaults), `--no-audio` (menu shown on the overlay only).
+Flags: `--offline` (never call OMNI; built-in defaults), `--no-audio` (menu shown on the overlay only), `--no-menu` (ignore blinks: colours play notes only).
 Simulate the eye tracker: `tools/send_gaze.py --at 0.4 0.6 --blink both` (then `--blink left`, …).
+
+## On the laptop screen, or with balloons (colour blocks and big coloured surfaces play tones)
+This is the setup we used at Hack the North: the QNX rig looks at a laptop screen showing coloured blocks (or at coloured
+balloons), and the block you look at plays its note from `assets/samples`. No blink menu, no API keys needed.
+
+```bash
+start_colour_tones.bat                              # Windows: opens the control page, or:
+.venv/Scripts/python tools/launcher.py --host 169.254.96.94      # the board's address; page at http://127.0.0.1:8780/
+```
+
+**Control page** (`tools/launcher.py`): **Run** starts the colour-block window, the tone player (`tools/synth.py`) and the gaze
+pipeline; **Stop** stops them. The page shows the front camera with the pointer, the eye camera with its tracking, what the
+camera **sees** (colour, shape, note, share of the picture), what you are **looking at** (and how many pixels away the pointer
+is), and what is **playing** (note, instrument and the colour). **Record** saves both cameras side by side with a text bar to
+`recordings/*.mp4` (git-ignored).
+
+First use, in this order:
+1. **Re-tune colours** (`tools/screen_colors.py tune`): shows the five blocks, measures how the scene camera sees them and
+   writes `config.laptop.json` (colour prototypes, white balance on, big-surface detection, pointing radius, and the QNX rig from
+   `rig_fit.json`). The block window must be in front and the scene camera must see the whole screen. Do it again when the
+   lighting or the camera aim changes.
+2. **Run**, then **Calibrate for me**: 12 coloured squares appear flush with the screen edges, one at a time (about 46 s). Look at
+   the centre of each. Each square is found in the scene picture by frame difference against a black baseline, so it does not
+   depend on the colour classifier. An affine correction from your raw gaze to the squares is saved to `user_calibration.json`
+   and is picked up live. The page shows the error before and after and on held-out points. Keep your head still and the
+   headset unmoved; a new mounting needs a new calibration. Run/Stop are ignored while it runs.
+3. **Manual offset**: if the pointer is still shifted, drag on the front picture (or use the arrow buttons or sliders). It is
+   applied after the calibration, live, and saved to `manual_offset.json` (git-ignored). A new calibration clears it.
+
+What it does:
+- **Nearest surface wins:** the surface nearest the pointer plays after a 0.5 s hold, if it is on it or within about 4% of the
+  picture width (about 8% counts as "near, not on it"). Only big surfaces count (1.2% to 60% of the picture), so small
+  coloured things in the background are ignored.
+- **Colours through a green cast:** the scene camera has a green/yellow cast (a white wall reads yellow-green), so the detector
+  sees an automatically white-balanced picture (`outer_vision/whitebal.py`). White, grey and black are never colours
+  (`color_match.s_min`). Orange balloons read as red.
+- **Gaze:** the geometric model from `outer_vision/gaze_model.py` with a fixed eye centre, then the user calibration, then
+  the manual offset, then a clamp to the picture. The calibration is fitted on the un-clamped gaze (`x_free`, `y_free`).
+
+Command-line pieces (used by the control page): `run.py --no-menu --status-file F --user-cal user_calibration.json
+--manual-offset manual_offset.json --stream 8790 --headless --config config.laptop.json`. `--status-file` writes what it sees /
+looks at / played as JSON (about 7 times a second).
+
+Accuracy, honestly: about 4 degrees (roughly 60 px in a 640 px picture) after a good calibration, so a block or balloon has to
+be much bigger than that to be picked reliably. The lower screen is hard: the lids cover the iris when looking down. The
+rig geometry was fitted for one mounting; a very different mounting can push the raw gaze far off the picture.
 
 ## Demo script (≈90 s)
 1. Look at red, yellow, blue → C, D, G play (marimba, bell, piano).

@@ -233,6 +233,10 @@ def gaze_from_state(state: dict, rig: dict, min_open: float = MIN_OPEN_FOR_GAZE)
     out["ok"] = True
     out["x"] = min(1.0, max(0.0, px / sw))
     out["y"] = min(1.0, max(0.0, py / sh))
+    # the same point WITHOUT the clamp to the picture (only a wide sanity range): a value pinned to the edge
+    # carries no information, so the per-user calibration is fitted on these
+    out["x_free"] = min(6.0, max(-5.0, px / sw))
+    out["y_free"] = min(6.0, max(-5.0, py / sh))
     out["yaw_deg"] = math.degrees(yaw)
     out["pitch_deg"] = math.degrees(pitch)
     return out

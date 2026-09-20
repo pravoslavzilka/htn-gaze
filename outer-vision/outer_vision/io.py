@@ -286,12 +286,14 @@ class QnxGaze(NoGaze):
             return
 
         fresh = self._is_fresh(eyes)
+        _m0 = time.perf_counter()
         g = gaze_model.gaze_from_state(state, self.rig, self.lid["min_open_for_gaze"])
+        self.stats["model_ms"] = round((time.perf_counter() - _m0) * 1000, 2)   # pupil/iris -> gaze model, on this laptop
         self.stats["on_image"] = bool(g["on_image"])
         self.stats["pupil_ok"] = sum(1 for s in ("left", "right")
                                      if (g["eyes"].get(s) or {}).get("pupil_ok"))
         if g["ok"]:
-            self.latest = (*self.smooth.push(g["x"], g["y"]), now)
+            self.latest = (*self.smooth.push(g.get("x_free", g["x"]), g.get("y_free", g["y"])), now)   # un-clamped: run.py clamps after the corrections
             self.last_yaw_deg, self.last_pitch_deg = g["yaw_deg"], g["pitch_deg"]
         else:
             self.latest = None
