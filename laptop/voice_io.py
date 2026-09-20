@@ -85,8 +85,10 @@ class Listener:
 
     BLOCK = 480                       # 30 ms at 16 kHz
 
-    def __init__(self, is_busy=lambda: False, sr=MIC_SR, min_rms=450.0, end_silence_s=0.8, min_speech_s=0.5, max_s=12.0):
-        self.is_busy, self.sr, self.min_rms = is_busy, sr, min_rms
+    def __init__(self, is_busy=lambda: False, hold_start=lambda: False, sr=MIC_SR, min_rms=450.0, end_silence_s=0.8,
+                 min_speech_s=0.5, max_s=12.0, tail_s=1.5):
+        # hold_start(): true while something else is making sound (the instrument's note); no NEW clip starts then
+        self.is_busy, self.hold_start, self.sr, self.min_rms, self.tail_s = is_busy, hold_start, sr, min_rms, tail_s
         self.end_blocks = int(end_silence_s * sr / self.BLOCK)
         self.min_blocks = int(min_speech_s * sr / self.BLOCK)
         self.max_blocks = int(max_s * sr / self.BLOCK)
@@ -105,7 +107,7 @@ class Listener:
                 blk = q.get()
                 now = time.time()
                 if self.is_busy():
-                    cur, voiced, quiet, cool = None, 0, 0, now + 0.6
+                    cur, voiced, quiet, cool = None, 0, 0, now + self.tail_s
                     pre.clear()
                     continue
                 if now < cool:
@@ -117,7 +119,7 @@ class Listener:
                     if not loud:
                         self.floor = 0.98 * self.floor + 0.02 * rms
                         pre.append(blk)
-                    else:
+                    elif not self.hold_start():
                         cur, voiced, quiet, t_start = list(pre) + [blk], 1, 0, now - 0.3
                     continue
                 cur.append(blk)

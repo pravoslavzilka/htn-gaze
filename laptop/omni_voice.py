@@ -14,12 +14,15 @@
 Any failure (OMNI, ElevenLabs, network) is logged and spoken/printed; the loop keeps running.
 """
 import argparse
+import collections
+import difflib
 import base64
 import json
 import logging
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -40,10 +43,11 @@ MODEL = config.env("OMNI_MODEL", "qwen3.5-omni-flash")
 
 SYSTEM_PROMPT = """You are OMNI, the voice assistant of a head-mounted eye-tracking wearable. The wearer talks
 to you; they may address you as "OMNI". You get their spoken request (audio or text) and LOOK: JSON from the
-gaze tracker with what they were looking at while speaking: the colour name and RGB measured under their gaze
-point, and where (x,y in 0..1). The scene camera picture may be attached, with a green dot at the gaze point.
-"this", "this color", "that" mean the LOOK colour. Trust the measured LOOK colour over your own reading of the
-picture; if LOOK is missing, use a colour they named or the picture.
+gaze app with what they were looking at while speaking: colour, shape, and the musical note/instrument the app
+maps to it; source "looking_at" (gaze is on it now) or "just_played" (they looked at it and it played its note);
+x,y is the gaze point (0..1); on_table lists what the camera sees. The front camera picture may be attached, with
+the gaze pointer drawn on it. "this", "this color", "that", "it" mean the LOOK object. Trust LOOK over your own
+reading of the picture; if LOOK is unavailable, use a colour they named or the picture.
 
 You can ask ElevenLabs to generate a sound for a colour. Write a short sound-effect description that suits the
 colour (red = warm, bold, brassy; blue = calm, watery, soft chime; yellow = bright, sparkling; green = organic,
@@ -66,6 +70,8 @@ Reply with ONLY one JSON object, no prose, no code fences:
  "actions": [{"type": "create_sound", "color": "<one lowercase colour word>",
               "prompt": "<sound effect description, max 20 words, one short musical note or sound>",
               "seconds": <1-3>}]}
+Use create_sound ONLY when the wearer explicitly asks you to create/make/generate a sound (or tone) for it.
+Questions about the colour, note or what they see get NO actions, only an answer in "say".
 When you use create_sound, "say" MUST be exactly "On it." (the wearer hears "It was added." separately when done).
 For anything else (a question about the colour or what they see), use no actions and put a short answer
 (max 2 sentences) in "say". If you can't tell what they mean, ask one short question in "say"."""
@@ -147,12 +153,75 @@ class GazeApp:
         self.down = False
         return d if d.get("valid") and d.get("age", 9) < 1.5 else None
 
+    def note_recent(self, within=1.2):
+        return False
+
     def frame(self):
         try:
             return self._get("/frame") if self.url else None
         except Exception as e:
             log.warning("scene frame unavailable (%s)", e)
             return None
+
+
+class OvnApp:
+    """Client for the teammate's Outer-Vision-Network run.py: the JSON it writes with --status-file (what it sees,
+    which object the gaze is on, the last note it played) and its MJPEG overlay stream for the picture."""
+
+    def __init__(self, status_path, stream_url):
+        self.path, self.stream_url = Path(status_path), stream_url
+        self.last_lock_at = 0.0
+        self._warned = None
+
+    def _warn(self, key, msg):
+        if self._warned != key:                    # once per problem, not once per poll
+            log.warning(msg)
+        self._warned = key
+
+    def look(self):
+        try:
+            st = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self._warn("nofile", f"no status from the gaze app at {self.path} (is run.py started with --status-file?)")
+            return None
+        now = time.time()
+        if now - st.get("t", 0) > 3:
+            self._warn("stale", "gaze app status is stale (run.py stopped?)")
+            return None
+        self._warned = None
+        ll = st.get("last_lock") or {}
+        self.last_lock_at = ll.get("at", self.last_lock_at)
+        tgt = st.get("target")
+        if tgt:
+            src, o = "looking_at", tgt
+        elif ll and now - ll.get("at", 0) < 3.0:
+            src, o = "just_played", ll
+        else:
+            return None
+        w, h = st.get("frame_w") or 1, st.get("frame_h") or 1
+        gp = st.get("gaze_px")
+        return {"valid": True, "source": src, "color": o["color"], "shape": o.get("shape"), "note": o.get("note"),
+                "instrument": o.get("instrument"), "x": gp[0] / w if gp else None, "y": gp[1] / h if gp else None,
+                "on_table": [f"{t['color']} {t['shape']}" for t in st.get("seeing", [])]}
+
+    def note_recent(self, within=1.2):
+        """True while the instrument is (probably) still sounding its last note."""
+        return time.time() - self.last_lock_at < within
+
+    def frame(self):
+        """One JPEG cut out of the MJPEG overlay stream."""
+        try:
+            with urllib.request.urlopen(self.stream_url, timeout=3) as r:
+                buf = b""
+                while len(buf) < 3_000_000:
+                    buf += r.read(8192)
+                    i = buf.find(b"\xff\xd8")
+                    j = buf.find(b"\xff\xd9", i + 2) if i >= 0 else -1
+                    if j > 0:
+                        return buf[i:j + 2]
+        except Exception as e:
+            log.warning("front picture unavailable (%s)", e)
+        return None
 
 
 class GazeSampler(threading.Thread):
@@ -195,14 +264,20 @@ class GazeTrail(threading.Thread):
 
 
 def summarize(samples):
-    """Most-looked-at colour over the samples -> {"color", "rgb", "x", "y", "share"} or None."""
+    """Most-looked-at colour over the samples -> {"color", "shape", "note", ..., "share"} or None."""
     if not samples:
         return None
     import collections
     top, n = collections.Counter(s["color"] for s in samples).most_common(1)[0]
     last = [s for s in samples if s["color"] == top][-1]
-    return {"color": top, "rgb": last["rgb"], "x": round(last["x"], 3), "y": round(last["y"], 3),
-            "share": round(n / len(samples), 2)}
+    out = dict(last)
+    out.pop("valid", None)
+    out.pop("age", None)
+    for k in ("x", "y"):
+        if out.get(k) is not None:
+            out[k] = round(out[k], 3)
+    out["share"] = round(n / len(samples), 2)
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def safe_name(s):
@@ -216,6 +291,7 @@ class Voice:
         self.working = False                    # true from request start until the answer (and new sound) finished
         self.awake_s = config.env("AWAKE_SECONDS", 10.0, float)
         self.awake_until = 0.0                  # after a wake, follow-ups need no "OMNI" until this time
+        self.recent_says = collections.deque(maxlen=6)   # what OMNI itself just said, to recognise its own echo
 
     @property
     def awake(self):
@@ -230,6 +306,8 @@ class Voice:
     def say(self, text):
         """Speak with ElevenLabs; if that fails, print it. Never raises."""
         print(f"OMNI: {text}", flush=True)
+        if text and not SLEEP_RE.search(text):
+            self.recent_says.append(text)
         if not text or self.player is None:
             return
         with self.speak_lock:
@@ -239,6 +317,19 @@ class Voice:
                 self.player.wait()
             except ElevenError as e:
                 log.error("speech failed: %s", e)
+
+    def is_noise(self, heard):
+        """Empty/placeholder transcripts, or OMNI's own words coming back through the microphone."""
+        h = re.sub(r"[^a-z0-9 ]", "", heard.lower()).strip()
+        if not h or h == "the wearers request is in the audio":
+            return True
+        if NAME_RE.search(heard):
+            return False                                   # they addressed OMNI by name: a real request
+        for say in self.recent_says:
+            sv = re.sub(r"[^a-z0-9 ]", "", say.lower()).strip()
+            if difflib.SequenceMatcher(None, h, sv).ratio() > 0.8 or (len(h) > 12 and h in sv):
+                return True
+        return False
 
     def create_sound(self, action):
         color = safe_name(action.get("color"))
@@ -283,6 +374,9 @@ class Voice:
             return None
         omni_ms = round((time.monotonic() - t0) * 1000)
         heard = str(reply.get("heard") or "")
+        if self.is_noise(heard):
+            print(f"(noise/echo, ignored: {heard!r})", flush=True)
+            return None
         if SLEEP_RE.search(heard) and (self.awake or NAME_RE.search(heard)):   # deterministic, not up to the model
             print(f"heard: {heard!r}  ({omni_ms} ms)", flush=True)
             self.say("Going to sleep.")
@@ -333,16 +427,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--text", help="send this text instead of recording (testing)")
     ap.add_argument("--wav", help="send a recorded question instead of using the mic")
-    ap.add_argument("--app", default="http://127.0.0.1:8766", help="gaze app (calib/gaze_live.py) base URL; '' to disable")
+    ap.add_argument("--status", default=str(Path(tempfile.gettempdir()) / "ovn_status.json"),
+                    help="status JSON written by Outer-Vision-Network run.py --status-file")
+    ap.add_argument("--stream", default="http://127.0.0.1:8790/stream", help="run.py --stream MJPEG URL (front picture)")
+    ap.add_argument("--app", default="", help="use calib/gaze_live.py instead, e.g. http://127.0.0.1:8766")
     ap.add_argument("--ptt", action="store_true", help="push-to-talk (Enter) instead of always listening for 'OMNI'")
     ap.add_argument("--no-audio-out", action="store_true", help="don't play sound (print only)")
     a = ap.parse_args()
     for k in ("OMNI_API_KEY", "ELEVENLABS_API_KEY"):
         if not config.env(k):
             sys.exit(f"{k} missing: put it in laptop/.env")
-    app = GazeApp(a.app)
-    if a.app and app.look() is None:
-        log.warning("gaze app at %s not reporting a gaze yet; say a colour name if it stays that way", a.app)
+    app = GazeApp(a.app) if a.app else OvnApp(a.status, a.stream)
+    if app.look() is None:
+        log.info("not looking at any object right now (or the gaze app is not running)")
     voice = Voice(None if a.no_audio_out else Player(SR))
     if a.text or a.wav:
         audio = read_wav(a.wav)[0] if a.wav else None
@@ -374,7 +471,6 @@ def main():
     def announce_sleep():
         was = False
         while True:
-            now = voice.awake and not voice.busy()
             if was and not voice.awake:
                 print('(asleep: say "OMNI" to wake me)', flush=True)
             was = voice.awake
@@ -383,7 +479,7 @@ def main():
     print(f'Listening. Say "OMNI, ..."  ({voice.awake_s:.0f} s after my last answer I go back to sleep; Ctrl+C quits)', flush=True)
     while True:
         try:
-            for audio, t0, t1 in Listener(voice.busy).utterances():
+            for audio, t0, t1 in Listener(voice.busy, app.note_recent).utterances():
                 look = trail.window(t0, t1)
                 print(f"[{len(audio) / 16000:.1f}s of speech] looking at: {look}", flush=True)
                 try:
