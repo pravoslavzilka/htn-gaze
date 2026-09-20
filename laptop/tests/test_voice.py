@@ -58,5 +58,33 @@ class NoiseTests(unittest.TestCase):
         self.assertTrue(o.NAME_RE.search("Omni, hello"))
 
 
+class CropTests(unittest.TestCase):
+    @staticmethod
+    def jpg(w=640, h=360):
+        import cv2
+        import numpy as np
+        return cv2.imencode(".jpg", np.zeros((h, w, 3), np.uint8))[1].tobytes()
+
+    @staticmethod
+    def size(jpeg):
+        import cv2
+        import numpy as np
+        h, w = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR).shape[:2]
+        return w, h
+
+    def test_crop_is_a_close_up_with_the_same_aspect_ratio(self):
+        w, h = self.size(o.crop_around(self.jpg(), 0.5, 0.5))
+        self.assertEqual((w, h), (192, 108))                      # 30% of 640 wide
+
+    def test_crop_stays_inside_the_frame_at_the_edges(self):
+        for x, y in ((0.0, 0.0), (1.0, 1.0), (0.99, 0.01)):
+            self.assertEqual(self.size(o.crop_around(self.jpg(), x, y)), (192, 108))
+
+    def test_no_gaze_or_no_picture_means_no_crop(self):
+        self.assertIsNone(o.crop_around(self.jpg(), None, 0.5))
+        self.assertIsNone(o.crop_around(None, 0.5, 0.5))
+        self.assertIsNone(o.crop_around(b"not a jpeg", 0.5, 0.5))
+
+
 if __name__ == "__main__":
     unittest.main()

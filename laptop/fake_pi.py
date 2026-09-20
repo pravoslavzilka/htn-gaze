@@ -22,8 +22,19 @@ ap.add_argument("--run", default="demo1")
 ap.add_argument("--fps", type=float, default=30)
 ap.add_argument("--seconds", type=float, default=20)
 ap.add_argument("--loss", type=float, default=0.0, help="fraction of packets silently not sent")
+ap.add_argument("--burn-ms", type=float, default=0, help="really burn this much CPU per frame in detect_objects() (gives a profile something to find)")
 ap.add_argument("--slow-stage", default=None, help="add ~35 ms to this stage (cap|pupil|gaze|scene|fix)")
 a = ap.parse_args()
+
+
+
+def detect_objects(ms):
+    end = time.perf_counter() + ms / 1000
+    x = 0
+    while time.perf_counter() < end:
+        x += sum(i * i for i in range(200))
+    return x
+
 
 tx = GazeSender(a.host, a.port, a.run)
 t_end, i = time.time() + a.seconds, 0
@@ -36,7 +47,12 @@ while time.time() < t_end:
         base = {"cap": 6, "pupil": 4, "gaze": 0.3, "scene": 40, "fix": 0.5}
         if a.slow_stage:
             base[a.slow_stage] += 35
+        if a.burn_ms:
+            with fr.stage("scene"):
+                detect_objects(a.burn_ms)
         for k, v in base.items():
+            if a.burn_ms and k == "scene":
+                continue                       # keep the really measured scene time
             fr.pkt[f"{k}_ms"] = round(max(0.1, random.gauss(v, v * 0.1)), 2)
         fr.set(conf=0.05 if blink else round(random.uniform(0.8, 0.98), 2),
                gx=round(0.5 + 0.3 * math.sin(ph / 2), 3), gy=round(0.5 + 0.2 * math.cos(ph / 3), 3),
@@ -45,4 +61,5 @@ while time.time() < t_end:
             fr.event("blink")
     i += 1
     time.sleep(max(0, 1 / a.fps - (time.perf_counter() - tick)))
+tx.close()
 print(f"sent {i} frames for run {a.run}")

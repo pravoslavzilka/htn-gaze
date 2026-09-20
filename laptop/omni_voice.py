@@ -50,7 +50,7 @@ to you; they may address you as "OMNI". You get their spoken request (audio or t
 gaze app with what they were looking at while speaking: colour, shape, and the musical note/instrument the app
 maps to it; source "looking_at" (gaze is on it now) or "just_played" (they looked at it and it played its note);
 x,y is the gaze point (0..1); on_table lists what the camera sees. The front camera picture may be attached, with
-the gaze pointer drawn on it. "this", "this color", "that", "it" mean the LOOK object. Trust LOOK over your own
+the gaze pointer drawn on it, followed by a second picture: a close-up crop around the gaze point. "this", "this color", "that", "it" mean the LOOK object. Trust LOOK over your own
 reading of the picture; if LOOK is unavailable, use a colour they named or the picture.
 
 You can ask ElevenLabs to generate a sound for a colour. Write a short sound-effect description that suits the
@@ -292,6 +292,26 @@ def summarize(samples):
     return {k: v for k, v in out.items() if v is not None}
 
 
+def crop_around(jpeg, x, y, frac=0.3):
+    """JPEG of the region around the gaze point (x, y in 0..1): a box `frac` of the frame wide, kept inside the frame.
+    None if there is no picture or no gaze point. Lets OMNI look closely at what is being fixated."""
+    if not jpeg or x is None or y is None:
+        return None
+    try:
+        import cv2
+        import numpy as np
+        img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        h, w = img.shape[:2]
+        bw = max(32, int(w * frac))
+        bh = max(32, int(bw * h / w))
+        x0 = int(min(max(x * w - bw / 2, 0), w - bw))
+        y0 = int(min(max(y * h - bh / 2, 0), h - bh))
+        return cv2.imencode(".jpg", img[y0:y0 + bh, x0:x0 + bw], [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+    except Exception as e:
+        log.warning("could not crop the picture (%s)", e)
+        return None
+
+
 def safe_name(s):
     return re.sub(r"[^a-z0-9]+", "_", str(s).lower()).strip("_") or "sound"
 
@@ -385,6 +405,9 @@ class Voice:
         user = []
         if scene:
             user.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(scene).decode()}})
+            crop = crop_around(scene, (look or {}).get("x"), (look or {}).get("y"))
+            if crop:                                              # picture 2: a close-up of where they are looking
+                user.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(crop).decode()}})
         if audio is not None:
             user.append({"type": "input_audio", "input_audio": {"data": "data:;base64," + base64.b64encode(
                 to_wav(audio, 16000)).decode(), "format": "wav"}})
@@ -398,6 +421,13 @@ class Voice:
                     "has_audio": audio is not None, "has_image": bool(scene)}):
                 raw = omni_text([{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}])
             reply = parse_reply(raw)
+            if reply.get("wake") is False and NAME_RE.search(str(reply.get("heard") or "")):
+                # the model's wake-word call is flaky; the name IS in what it heard, so ask once more, firmly
+                user.append({"type": "text", "text": "NOTE: the wearer DID address you by name. Never set wake to false "
+                                                     "for this; act on the request."})
+                with telemetry.span(tx, "gen_ai.chat", f"chat {MODEL} (retry: wake word)", **{"gen_ai.request.model": MODEL}):
+                    reply = parse_reply(omni_text([{"role": "system", "content": SYSTEM_PROMPT},
+                                                   {"role": "user", "content": user}]))
         except (OmniError, ValueError) as e:
             log.error("OMNI failed: %s", e)         # also becomes a Sentry issue, linked to this trace
             self.say("Sorry, I couldn't reach OMNI.", tx)

@@ -15,6 +15,8 @@ import json
 import socket
 import time
 
+import pi_profiling
+
 STAGES = ("cap", "pupil", "gaze", "scene", "fix")
 
 
@@ -43,17 +45,23 @@ class GazeSender:
         self.addr, self.run, self.f = (host, int(port)), run, 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
+        self.prof = pi_profiling.start(run)      # None unless PROFILE=1 (then sentry_sdk is imported, otherwise never)
 
     @contextlib.contextmanager
     def frame(self, send=True):
         """send=False still advances the frame counter (used by tests to simulate packet loss)."""
         fr = Frame(self.f)
         self.f += 1
-        try:
-            yield fr
-        finally:
-            if send:
-                self.send(fr.pkt)
+        with (self.prof.frame() if self.prof else contextlib.nullcontext()):
+            try:
+                yield fr
+            finally:
+                if send:
+                    self.send(fr.pkt)
+
+    def close(self):
+        if self.prof:
+            self.prof.close()
 
     def send(self, pkt):
         pkt = {"run": self.run, **pkt}

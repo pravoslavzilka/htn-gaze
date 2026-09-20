@@ -63,6 +63,18 @@ The gaze app must be started with `--status-file` (the launcher does) and `--str
 - Optional: `SENTRY_AUTH_TOKEN` (read-only), `SENTRY_ORG_SLUG`, `SENTRY_PROJECT_SLUG` enable the issues list and org-specific
   links; without them the buttons open the project pages.
 
+
+### Profiling (Pi test runs only) and checking Sentry
+- `PROFILE=1 SENTRY_DSN=... python <pipeline>` turns on Sentry tracing + the continuous profiler (`profile_session_sample_rate`,
+  `profile_lifecycle="trace"`, sentry-sdk >= 2.24.1) in `sender/pi_profiling.py`; it wraps `PROFILE_CHUNK_S` (5) seconds of frames in one
+  `gaze_chunk` transaction so the profile attaches. Unset = the SDK is never imported (tested). Needs internet on the Pi.
+  Profiles are buffered for up to 60 s and are flushed at exit, so run for over a minute or stop the process cleanly. Try it:
+  `PROFILE=1 python laptop/fake_pi.py --burn-ms 25 --seconds 70` (real CPU work in `detect_objects`).
+- `python verify_sentry.py` posts one event to the ingest endpoint and prints the HTTP answer (200 + id = accepted).
+- `python create_sentry_dashboard.py [--dry-run]` creates the widgets through the API (needs a token; not yet tested against the live API).
+- `calib_drift` events come from `ovn_bridge.py`'s `DriftDetector`: a heuristic on how far the gaze lands from the object it selects.
+- OMNI receives the full front picture plus a close-up crop around the gaze point.
+
 ### Widgets to create in Sentry's own Dashboards (Dashboards -> Create -> Add widget)
 Field names differ slightly between Sentry UI versions; if a field is missing, pick the closest in the query builder.
 1. **Pipeline p95 by stage** - Dataset: *Spans*. Query: `transaction:gaze_pipeline span.op:[cap,pupil,gaze,scene,fix]`.

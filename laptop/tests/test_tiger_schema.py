@@ -59,5 +59,33 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual((p["conf"], p["ev"]), (0.0, ["camera_error"]))
 
 
+class Drift(unittest.TestCase):
+    @staticmethod
+    def feed(det, dists, t0=100.0, dt=0.15, w=640):
+        fired = []
+        for i, d in enumerate(dists):
+            fired.append(det.update({"t": t0 + i * dt, "frame_w": w, "eyes_closed": False, "target": {"dist_px": d}}))
+        return fired
+
+    def test_sustained_miss_fires_once_then_is_quiet(self):
+        det = ovn_bridge.DriftDetector()
+        fired = self.feed(det, [70] * 60)                       # 9 s of the gaze landing ~70 px off its object
+        self.assertEqual(sum(fired), 1)
+
+    def test_good_tracking_never_fires_and_neither_do_sparse_samples(self):
+        self.assertEqual(sum(self.feed(ovn_bridge.DriftDetector(), [3, 10, 0, 25, 8] * 20)), 0)
+        self.assertEqual(sum(self.feed(ovn_bridge.DriftDetector(), [90] * 5)), 0)          # too few samples to say
+
+    def test_one_outlier_burst_is_not_drift_and_the_median_decides(self):
+        self.assertEqual(sum(self.feed(ovn_bridge.DriftDetector(), ([5] * 8 + [200] * 3) * 6)), 0)
+
+    def test_threshold_scales_with_frame_width(self):
+        self.assertEqual(sum(self.feed(ovn_bridge.DriftDetector(), [70] * 30, w=1280)), 0)  # 70 px at 1280 wide = 35 px at 640
+
+    def test_the_event_lands_in_the_packet(self):
+        self.assertIn("calib_drift", ovn_bridge.packet(BridgeTests.ST, 1, drift=True)["ev"])
+        self.assertNotIn("calib_drift", ovn_bridge.packet(BridgeTests.ST, 1)["ev"])
+
+
 if __name__ == "__main__":
     unittest.main()
